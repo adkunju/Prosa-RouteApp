@@ -10,12 +10,12 @@ import WeekPlanScreen from './WeekPlanScreen'
 import LogScreen from './LogScreen'
 import SettingsScreen from './SettingsScreen'
 import { useTheme } from './useTheme'
-import { LayoutDashboard, CalendarDays, ClipboardList, Settings } from 'lucide-react'
+import { LayoutDashboard, CalendarDays, ClipboardList, Truck, Settings } from 'lucide-react'
 
 const NAV = [
   { key: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
   { key: 'plan',      label: 'Plan',      Icon: CalendarDays },
-  { key: 'log',       label: 'Log',       Icon: ClipboardList },
+  { key: 'delivery',  label: 'Delivery',  Icon: Truck },
   { key: 'settings',  label: 'Settings',  Icon: Settings },
 ]
 
@@ -27,10 +27,6 @@ function PlanHub() {
         <button onClick={() => setTab('allocation')}
           className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'allocation' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
           Allocate
-        </button>
-        <button onClick={() => setTab('plan')}
-          className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'plan' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
-          Plan
         </button>
         <button onClick={() => setTab('week')}
           className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'week' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
@@ -46,7 +42,6 @@ function PlanHub() {
         </button>
       </div>
       {tab === 'allocation' && <AllocationScreen />}
-      {tab === 'plan' && <PlanViewScreen />}
       {tab === 'week' && <WeekPlanScreen />}
       {tab === 'production' && <ProductionScreen />}
       {tab === 'forecast' && <ForecastScreen />}
@@ -66,7 +61,7 @@ function Shell() {
       <main className="flex-1 flex flex-col overflow-hidden relative pb-20">
         {screen === 'dashboard' && <DashboardScreen />}
         {screen === 'plan'      && <PlanHub />}
-        {screen === 'log'       && <LogScreen />}
+        {screen === 'delivery'  && <PlanViewScreen />}
         {screen === 'settings'  && <SettingsScreen theme={theme} setTheme={setTheme} />}
       </main>
 

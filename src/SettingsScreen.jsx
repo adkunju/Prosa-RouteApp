@@ -3,8 +3,9 @@ import SkusScreen from './SkusScreen'
 import ManageStoresList from './ManageStoresList'
 import MatrixPanel from './MatrixPanel'
 import { supabase } from './supabaseClient'
-import { Package, Route, Store, ChevronRight, LogOut, RefreshCw, Sun, Moon } from 'lucide-react'
+import { Package, Route, Store, ChevronRight, LogOut, RefreshCw, Sun, Moon, ClipboardList } from 'lucide-react'
 import BulkSyncPanel from './BulkSyncPanel'
+import LogScreen from './LogScreen'
 
 export default function SettingsScreen({ theme, setTheme }) {
   const [section, setSection] = useState(null) // null | 'skus' | 'matrix' | 'stores'
@@ -16,6 +17,17 @@ export default function SettingsScreen({ theme, setTheme }) {
           <button onClick={() => setSection(null)} className="text-[var(--text-accent)] text-sm">← Settings</button>
         </div>
         <SkusScreen />
+      </div>
+    )
+  }
+
+  if (section === 'log') {
+    return (
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center gap-2 shrink-0">
+          <button onClick={() => setSection(null)} className="text-[var(--text-accent)] text-sm">← Settings</button>
+        </div>
+        <LogScreen />
       </div>
     )
   }
@@ -70,6 +82,13 @@ export default function SettingsScreen({ theme, setTheme }) {
         className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 flex items-center justify-between hover:bg-[var(--bg-input)]/40 transition-colors">
         <span className="flex items-center gap-3 text-[var(--text-primary)] text-sm font-medium">
           <Package size={18} className="text-[var(--text-accent)]" /> Manage SKU
+        </span>
+        <ChevronRight size={16} className="text-[var(--text-muted2)]" />
+      </button>
+      <button onClick={() => setSection('log')}
+        className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 flex items-center justify-between hover:bg-[var(--bg-input)]/40 transition-colors">
+        <span className="flex items-center gap-3 text-[var(--text-primary)] text-sm font-medium">
+          <ClipboardList size={18} className="text-[var(--text-accent)]" /> Delivery &amp; Return Log
         </span>
         <ChevronRight size={16} className="text-[var(--text-muted2)]" />
       </button>
