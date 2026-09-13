@@ -23,7 +23,8 @@ export default function WeekPlanScreen() {
   const [dueStores, setDueStores] = useState([]) // [{store_id, name, service_minutes, due_date, bearing, skuReqs:[{sku_id,name,qty}]}]
   const [assignment, setAssignment] = useState({}) // storeId -> dayIndex
   const [locked, setLocked] = useState({}) // storeId -> bool
-  const [dayMinutes, setDayMinutes] = useState(Array(NUM_DAYS).fill(0))
+  const [matrixMap, setMatrixMap] = useState({})
+  const [depotId, setDepotId] = useState(null)
 
   async function load() {
     setLoading(true)
@@ -105,9 +106,10 @@ export default function WeekPlanScreen() {
       }
     })
 
+    setMatrixMap(matrixMap)
+    setDepotId(depot.id)
     setDueStores(stores_due)
     setAssignment(assign)
-    setDayMinutes(dayMins)
     setLoading(false)
   }
 
@@ -129,6 +131,21 @@ export default function WeekPlanScreen() {
     })
     return grouped
   }, [dueStores, assignment])
+
+  // Recomputed on every change: route each day depot -> stops -> depot using
+  // real matrix legs, plus service time at each stop.
+  const dayMinutes = useMemo(() => {
+    const leg = (a, b) => matrixMap[`${a}_${b}`] ?? matrixMap[`${b}_${a}`] ?? 600
+    return byDay.map(stops => {
+      if (!stops.length || !depotId) return 0
+      let seconds = 0
+      let prev = depotId
+      stops.forEach(s => { seconds += leg(prev, s.store_id); prev = s.store_id })
+      seconds += leg(prev, depotId)
+      const service = stops.reduce((a, s) => a + (s.service_minutes || 15), 0)
+      return Math.round(seconds / 60 + service)
+    })
+  }, [byDay, matrixMap, depotId])
 
   async function saveWeekPlan() {
     setSaving(true)
