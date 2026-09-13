@@ -112,6 +112,10 @@ export default function PlanViewScreen() {
   const [matrixMeters, setMatrixMeters] = useState({})
   const [metric, setMetric] = useState('seconds')
   const [order, setOrder] = useState([])
+  const [priorLines, setPriorLines] = useState({})   // sku_id -> earlier delivery lines
+  const [allSkus, setAllSkus] = useState([])
+  const [extraReqs, setExtraReqs] = useState([])     // impulse-added SKUs
+  const [addSkuOpen, setAddSkuOpen] = useState(false)
   const [locked, setLocked] = useState({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -225,23 +229,95 @@ export default function PlanViewScreen() {
     return batches.filter(b => b.sku_id === skuId)
   }
 
-  function openCompleteForm(stop) {
+  async function openCompleteForm(stop) {
     const initial = {}
     stop.requirements.forEach(r => {
       const skuBatches = batchesForSku(r.sku_id)
       initial[r.sku_id] = {
         qty_delivered: r.approved_qty ?? r.proposed_qty ?? 0,
         qty_returned: '',
+        return_line_id: '',
         batch_id: skuBatches[0]?.id || '',
       }
     })
     setCompleteForm(initial)
+    setExtraReqs([])
+    setAddSkuOpen(false)
     setActiveCompleteStop(stop)
+
+    const [{ data: skus }, { data: prior }] = await Promise.all([
+      supabase.from('skus').select('id, name').order('name'),
+      supabase.from('delivery_lines')
+        .select('id, sku_id, qty_delivered, delivered_on, production_batches(produced_on), returns(qty_returned), plan_stops!inner(store_id)')
+        .eq('plan_stops.store_id', stop.store_id)
+        .order('delivered_on', { ascending: false })
+        .limit(80),
+    ])
+    setAllSkus(skus || [])
+
+    const grouped = {}
+    ;(prior || []).forEach(l => {
+      const already = (l.returns || []).reduce((a, r) => a + (r.qty_returned || 0), 0)
+      if (!grouped[l.sku_id]) grouped[l.sku_id] = []
+      grouped[l.sku_id].push({
+        id: l.id,
+        delivered_on: l.delivered_on,
+        produced_on: l.production_batches?.produced_on || null,
+        qty_delivered: l.qty_delivered,
+        already_returned: already,
+      })
+    })
+    setPriorLines(grouped)
+  }
+
+  // DD/MM/YYYY -> ISO. Returns null if not a real date.
+  function parseDMY(s) {
+    const m = /^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/.exec((s || '').trim())
+    if (!m) return null
+    const [, d, mo, y] = m
+    const iso = `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+    const dt = new Date(iso + 'T00:00:00')
+    if (isNaN(dt) || dt.getDate() !== Number(d) || dt.getMonth() + 1 !== Number(mo)) return null
+    return iso
+  }
+
+  // Exact batch match only. If nothing was made that day we say so and stop —
+  // Takes an ISO date straight from the picker. Matches the production date
+  // when the delivery recorded a batch, otherwise the delivery date, since
+  // imported history carries no batch at all.
+  function resolveReturnLine(skuId, iso) {
+    if (!iso) return { id: '', status: 'empty' }
+    const prior = priorLines[skuId] || []
+    const hit = prior.find(p => p.produced_on === iso) || prior.find(p => p.delivered_on === iso)
+    if (!hit) return { id: '', status: 'nomatch' }
+    return {
+      id: hit.id,
+      status: 'ok',
+      note: (hit.produced_on ? `Made ${hit.produced_on} · ` : '') +
+        `delivered ${hit.qty_delivered} pcs on ${hit.delivered_on}` +
+        (hit.already_returned > 0 ? ` · ${hit.already_returned} already returned` : ''),
+    }
+  }
+
+  function addExtraSku(skuId) {
+    if (!skuId) return
+    const sku = allSkus.find(s => s.id === skuId)
+    if (!sku) return
+    const skuBatches = batchesForSku(skuId)
+    setExtraReqs(e => [...e, { sku_id: skuId, name: sku.name }])
+    setCompleteForm(f => ({ ...f, [skuId]: { qty_delivered: 0, qty_returned: '', return_line_id: '', batch_id: skuBatches[0]?.id || '' } }))
+    setAddSkuOpen(false)
+  }
+
+  function removeExtraSku(skuId) {
+    setExtraReqs(e => e.filter(x => x.sku_id !== skuId))
+    setCompleteForm(f => { const n = { ...f }; delete n[skuId]; return n })
   }
 
   function completeFormValid() {
     if (!activeCompleteStop) return false
-    return activeCompleteStop.requirements.every(r => {
+    const rows = [...activeCompleteStop.requirements.map(r => ({ sku_id: r.sku_id })), ...extraReqs]
+    return rows.every(r => {
       const line = completeForm[r.sku_id]
       if (!line) return false
       if (Number(line.qty_delivered) > 0 && !line.batch_id) return false
@@ -253,22 +329,49 @@ export default function PlanViewScreen() {
     if (!activeCompleteStop || !completeFormValid()) return
     setCompleting(true)
     const dateStr = selectedDate
-    for (const req of activeCompleteStop.requirements) {
+    // Impulse-added SKUs need a requirements row first, marked manual so it is
+    // distinguishable from forecast-generated rows.
+    for (const extra of extraReqs) {
+      const line = completeForm[extra.sku_id]
+      await supabase.from('requirements').insert({
+        plan_stop_id: activeCompleteStop.id,
+        sku_id: extra.sku_id,
+        proposed_qty: 0,
+        approved_qty: Number(line?.qty_delivered) || 0,
+        source: 'manual',
+      })
+    }
+
+    const rows = [
+      ...activeCompleteStop.requirements.map(r => ({ sku_id: r.sku_id })),
+      ...extraReqs.map(e => ({ sku_id: e.sku_id })),
+    ]
+
+    for (const req of rows) {
       const line = completeForm[req.sku_id]
       if (!line) continue
-      const { data: dl } = await supabase.from('delivery_lines').insert({
+      await supabase.from('delivery_lines').insert({
         plan_stop_id: activeCompleteStop.id,
         sku_id: req.sku_id,
         batch_id: line.batch_id || null,
         qty_delivered: Number(line.qty_delivered) || 0,
         delivered_on: dateStr,
-      }).select('id').single()
-      if (dl && line.qty_returned !== '' && Number(line.qty_returned) > 0) {
+      })
+      // Returns belong to the EARLIER delivery that carried the stock,
+      // never to the line we just created.
+      if (Number(line.qty_returned) > 0) {
+        // Link to the delivery when we can identify it. When we can't, record
+        // the return against the store and SKU instead of guessing a delivery —
+        // a wrong link corrupts that delivery's sold figure permanently.
         await supabase.from('returns').insert({
-          delivery_line_id: dl.id,
+          delivery_line_id: line.return_line_id || null,
+          store_id: activeCompleteStop.store_id,
+          sku_id: req.sku_id,
+          produced_on: line.return_date_text || null,
           qty_returned: Number(line.qty_returned),
           returned_on: dateStr,
           possible_stockout: false,
+          reason: line.return_line_id ? null : 'No matching delivery on record',
         })
       }
     }
@@ -417,13 +520,20 @@ export default function PlanViewScreen() {
             <button onClick={() => setActiveCompleteStop(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
           </div>
           <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">
-            {activeCompleteStop.requirements.map(req => {
-              const skuBatches = batchesForSku(req.sku_id)
-              const line = completeForm[req.sku_id] || {}
+            {[...activeCompleteStop.requirements.map(r => ({ key: r.id, sku_id: r.sku_id, name: r.skus?.name, extra: false })),
+              ...extraReqs.map(e => ({ key: 'x-' + e.sku_id, sku_id: e.sku_id, name: e.name, extra: true }))].map(row => {
+              const skuBatches = batchesForSku(row.sku_id)
+              const line = completeForm[row.sku_id] || {}
               const needsBatch = Number(line.qty_delivered) > 0 && !line.batch_id
+              const prior = priorLines[row.sku_id] || []
+              const needsReturnLine = Number(line.qty_returned) > 0 && !line.return_line_id
+              const req = { sku_id: row.sku_id }
               return (
-                <div key={req.id} className="bg-[var(--bg-card)] rounded-xl p-4">
-                  <div className="text-[var(--text-primary)] text-sm font-medium mb-3">{req.skus?.name}</div>
+                <div key={row.key} className="bg-[var(--bg-card)] rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-[var(--text-primary)] text-sm font-medium">{row.name}{row.extra && <span className="text-[var(--text-gold)] text-xs ml-2">trial</span>}</span>
+                    {row.extra && <button onClick={() => removeExtraSku(row.sku_id)} className="text-[var(--text-muted2)] hover:text-red-400"><X size={14} /></button>}
+                  </div>
                   <div className="mb-3">
                     <label className="text-[var(--text-muted)] text-xs mb-1 block">Production batch {needsBatch && <span className="text-red-400">*</span>}</label>
                     <select value={line.batch_id || ''}
@@ -452,9 +562,54 @@ export default function PlanViewScreen() {
                         className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
                     </div>
                   </div>
+                  {Number(line.qty_returned) > 0 && (() => {
+                    const res = resolveReturnLine(req.sku_id, line.return_date_text)
+                    const pretty = line.return_date_text
+                      ? new Date(line.return_date_text + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+                      : null
+                    return (
+                      <div className="mt-3">
+                        <label className="text-[var(--text-muted)] text-xs mb-1 block">Production date on the returned pack</label>
+                        <input type="date" value={line.return_date_text || ''}
+                          max={selectedDate}
+                          onChange={ev => {
+                            const v = ev.target.value
+                            const r = resolveReturnLine(req.sku_id, v)
+                            setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], return_date_text: v, return_line_id: r.id } }))
+                          }}
+                          className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                        {pretty && <p className="text-[var(--text-secondary)] text-xs mt-1">{pretty}</p>}
+                        {prior[0] && res.status !== 'ok' && (
+                          <p className="text-[var(--text-muted2)] text-xs mt-1">
+                            Last delivery here: {prior[0].delivered_on} · {prior[0].qty_delivered} pcs
+                          </p>
+                        )}
+                        {res.status === 'nomatch' && <p className="text-[var(--text-gold)] text-xs mt-1">No delivery on record for that date — saved as an unlinked return against this store</p>}
+                        {res.status === 'ok' && <p className="text-[var(--accent)] text-xs mt-1">{res.note}</p>}
+                      </div>
+                    )
+                  })()}
                 </div>
               )
             })}
+
+            {(() => {
+              const used = new Set([...activeCompleteStop.requirements.map(r => r.sku_id), ...extraReqs.map(x => x.sku_id)])
+              const available = allSkus.filter(s => !used.has(s.id))
+              if (available.length === 0) return null
+              return addSkuOpen ? (
+                <select autoFocus defaultValue="" onChange={ev => addExtraSku(ev.target.value)}
+                  className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]">
+                  <option value="">Select a product to add...</option>
+                  {available.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              ) : (
+                <button onClick={() => setAddSkuOpen(true)}
+                  className="w-full border border-dashed border-[var(--bg-input)] text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-xl py-3 text-sm transition-colors">
+                  + Add another product
+                </button>
+              )
+            })()}
           </div>
           <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
             <button onClick={submitComplete} disabled={completing || !completeFormValid()}
