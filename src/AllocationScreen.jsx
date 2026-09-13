@@ -23,8 +23,13 @@ export default function AllocationScreen() {
 
   useEffect(() => { load() }, [])
 
-  function daysUntil(dateStr) {
-    return Math.ceil((new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24))
+  // Days from the chosen plan date to the due date. Both parsed as local
+  // midnight so the difference is a whole number of days, no timezone skew.
+  function daysUntil(dateStr, from = planDate) {
+    if (!dateStr) return Infinity
+    const target = new Date(dateStr + 'T00:00:00')
+    const base = new Date(from + 'T00:00:00')
+    return Math.round((target - base) / 86400000)
   }
 
   const dueRows = rows
