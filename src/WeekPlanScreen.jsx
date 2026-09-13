@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { supabase } from './supabaseClient'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
-import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react'
+import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package } from 'lucide-react'
 
 const NUM_DAYS = 6
 const DAILY_BUDGET_MIN = 360 // 6 hours
@@ -16,6 +16,15 @@ function daysUntil(dateStr) {
   return Math.ceil((new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24))
 }
 
+function formatDuration(mins) {
+  const total = Math.round(mins)
+  const h = Math.floor(total / 60)
+  const m = total % 60
+  if (h === 0) return `${m} min`
+  if (m === 0) return `${h} hr`
+  return `${h} hr ${m} min`
+}
+
 export default function WeekPlanScreen() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -23,6 +32,7 @@ export default function WeekPlanScreen() {
   const [dueStores, setDueStores] = useState([]) // [{store_id, name, service_minutes, due_date, bearing, skuReqs:[{sku_id,name,qty}]}]
   const [assignment, setAssignment] = useState({}) // storeId -> dayIndex
   const [locked, setLocked] = useState({}) // storeId -> bool
+  const [pickupDue, setPickupDue] = useState([])
   const [matrixMap, setMatrixMap] = useState({})
   const [depotId, setDepotId] = useState(null)
 
@@ -32,7 +42,7 @@ export default function WeekPlanScreen() {
 
     const [{ data: forecast }, { data: stores }, { data: matrix }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*'),
-      supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot').eq('is_active', true),
+      supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup').eq('is_active', true),
       supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds'),
     ])
 
@@ -50,6 +60,7 @@ export default function WeekPlanScreen() {
           store_id: r.store_id,
           name: r.store_name,
           service_minutes: store?.service_minutes || 15,
+          is_pickup: !!store?.is_pickup,
           due_date: r.next_visit_due,
           bearing: store ? bearingFromDepot(depot.lat, depot.lng, store.lat, store.lng) : 0,
           skuReqs: [],
@@ -63,7 +74,11 @@ export default function WeekPlanScreen() {
       }
     })
 
-    const stores_due = Object.values(byStore)
+    // Pickup stores still get forecast and allocated — they just never occupy a
+    // route stop, so they are kept out of day assignment entirely.
+    const allDue = Object.values(byStore)
+    const stores_due = allDue.filter(s => !s.is_pickup)
+    setPickupDue(allDue.filter(s => s.is_pickup))
 
     // Greedy day assignment: sort by due date, then bearing (cluster direction)
     stores_due.sort((a, b) => {
@@ -81,7 +96,11 @@ export default function WeekPlanScreen() {
     }
 
     stores_due.forEach(s => {
-      const dueDay = Math.max(0, Math.min(NUM_DAYS - 1, daysUntil(s.due_date)))
+      const rawDue = daysUntil(s.due_date)
+      // Already overdue: one more day changes little, so let it land anywhere in
+      // the week rather than forcing every overdue store onto Day 1.
+      const overdue = rawDue < 0
+      const dueDay = overdue ? NUM_DAYS - 1 : Math.max(0, Math.min(NUM_DAYS - 1, rawDue))
       let placed = false
       for (let day = 0; day <= dueDay; day++) {
         const list = dayLists[day]
@@ -99,10 +118,16 @@ export default function WeekPlanScreen() {
         }
       }
       if (!placed) {
-        // overflow — force onto due day anyway
-        dayLists[dueDay].push(s.store_id)
-        dayMins[dueDay] += s.service_minutes + 20 // rough penalty
-        assign[s.store_id] = dueDay
+        // Nothing fits inside the budget: put it on the emptiest eligible day
+        // instead of stacking everything on one, so the overflow is spread and
+        // visible rather than hidden in a single impossible day.
+        let best = 0
+        for (let day = 1; day <= dueDay; day++) {
+          if (dayMins[day] < dayMins[best]) best = day
+        }
+        dayLists[best].push(s.store_id)
+        dayMins[best] += s.service_minutes + 20
+        assign[s.store_id] = best
       }
     })
 
@@ -208,6 +233,26 @@ export default function WeekPlanScreen() {
 
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-5">
         {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Computing assignments...</div>}
+
+        {!loading && pickupDue.length > 0 && (
+          <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--text-gold)]/30 rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[var(--text-primary)] text-sm font-medium flex items-center gap-2">
+                <Package size={14} className="text-[var(--text-gold)]" /> Collecting from depot
+              </span>
+              <span className="text-[var(--text-muted2)] text-xs">{pickupDue.length} stores</span>
+            </div>
+            <p className="text-[var(--text-muted2)] text-xs mb-3">Not route stops — box these up for collection.</p>
+            {pickupDue.map(s => (
+              <div key={s.store_id} className="flex items-start justify-between py-1.5 border-t border-[var(--bg-input)]/40">
+                <span className="text-[var(--text-secondary)] text-xs">{s.name}</span>
+                <span className="text-[var(--text-muted)] text-xs text-right shrink-0 ml-3">
+                  {s.skuReqs.map(r => `${r.name}: ${r.qty}`).join(' · ')}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         {!loading && Array.from({ length: NUM_DAYS }).map((_, day) => {
           const stops = byDay[day]
           const mins = dayMinutes[day]
@@ -219,7 +264,7 @@ export default function WeekPlanScreen() {
                   Day {day + 1} — {dateForOffset(day)}
                 </span>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${overloaded ? 'bg-red-900/60 text-red-300' : 'bg-[var(--bg-input)] text-[var(--text-secondary)]'}`}>
-                  {Math.round(mins)} min · {stops.length} stops
+                  {formatDuration(mins)} · {stops.length} stops
                   {overloaded && <AlertTriangle size={11} className="inline ml-1" />}
                 </span>
               </div>
