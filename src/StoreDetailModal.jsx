@@ -20,6 +20,7 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
   const [editLng, setEditLng] = useState(store.lng ?? '')
   const [serviceMinutes, setServiceMinutes] = useState(store.service_minutes ?? 15)
   const [isPickup, setIsPickup] = useState(!!store.is_pickup)
+  const [inForecast, setInForecast] = useState(!store.exclude_from_forecast)
   const [hours, setHours] = useState(() => {
     const descs = store.opening_hours?.weekdayDescriptions
     const obj = {}
@@ -156,6 +157,7 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
       service_minutes: Number(serviceMinutes),
       opening_hours: { weekdayDescriptions },
       is_pickup: isPickup,
+      exclude_from_forecast: !inForecast,
     }
     if (selectedPlace) {
       updates.address = selectedPlace.place.formattedAddress || store.address
@@ -271,12 +273,27 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
 
         {/* Self-pickup toggle */}
         <button onClick={() => setIsPickup(v => !v)}
-          className="w-full flex items-center justify-between bg-[var(--bg-input)]/40 rounded-xl p-3 mb-4">
-          <span className="flex items-center gap-2 text-[var(--text-secondary)] text-sm">
-            <Truck size={15} /> Self-pickup (excluded from routing & forecast)
+          className="w-full flex items-center justify-between bg-[var(--bg-input)]/40 rounded-xl p-3 mb-2">
+          <span className="flex flex-col items-start gap-0.5 text-left">
+            <span className="flex items-center gap-2 text-[var(--text-secondary)] text-sm">
+              <Truck size={15} /> Self-pickup
+            </span>
+            <span className="text-[var(--text-muted2)] text-xs">Collects from depot — no route stop</span>
           </span>
-          <span className={`w-10 h-5 rounded-full relative transition-colors ${isPickup ? 'bg-[var(--accent)]' : 'bg-[var(--bg-hover)]'}`}>
-            <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${isPickup ? 'translate-x-5' : 'translate-x-0.5'}`} />
+          <span className={`inline-block shrink-0 w-10 h-5 rounded-full relative transition-colors ${isPickup ? 'bg-[var(--accent)]' : 'bg-[var(--bg-hover)]'}`}>
+            <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${isPickup ? 'translate-x-5' : 'translate-x-0'}`} />
+          </span>
+        </button>
+
+        {/* Forecast toggle */}
+        <button onClick={() => setInForecast(v => !v)}
+          className="w-full flex items-center justify-between bg-[var(--bg-input)]/40 rounded-xl p-3 mb-4">
+          <span className="flex flex-col items-start gap-0.5 text-left">
+            <span className="text-[var(--text-secondary)] text-sm">Include in forecasting</span>
+            <span className="text-[var(--text-muted2)] text-xs">Counts toward production &amp; allocation</span>
+          </span>
+          <span className={`inline-block shrink-0 w-10 h-5 rounded-full relative transition-colors ${inForecast ? 'bg-[var(--accent)]' : 'bg-[var(--bg-hover)]'}`}>
+            <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${inForecast ? 'translate-x-5' : 'translate-x-0'}`} />
           </span>
         </button>
 
