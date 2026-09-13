@@ -99,34 +99,36 @@ export default function DashboardScreen() {
     const today = isoDate(now)
 
     const { data: dlsThis } = await supabase
-      .from('delivery_lines').select('qty_delivered, delivered_on, plan_stops!inner(store_id)')
+      .from('delivery_lines').select('id, qty_delivered, delivered_on, plan_stops!inner(store_id)')
       .eq('plan_stops.store_id', store.id).gte('delivered_on', mStart).lte('delivered_on', today)
     const { data: retsThis } = await supabase
-      .from('returns').select('qty_returned, returned_on, delivery_lines!inner(plan_stop_id, plan_stops!inner(store_id))')
+      .from('returns').select('qty_returned, returned_on, delivery_line_id, delivery_lines!inner(plan_stop_id, plan_stops!inner(store_id))')
       .eq('delivery_lines.plan_stops.store_id', store.id).gte('returned_on', mStart).lte('returned_on', today)
 
     const { data: dlsLast } = await supabase
-      .from('delivery_lines').select('qty_delivered, delivered_on, plan_stops!inner(store_id)')
+      .from('delivery_lines').select('id, qty_delivered, delivered_on, plan_stops!inner(store_id)')
       .eq('plan_stops.store_id', store.id).gte('delivered_on', pmStart).lte('delivered_on', pmCutoff)
     const { data: retsLast } = await supabase
-      .from('returns').select('qty_returned, returned_on, delivery_lines!inner(plan_stop_id, plan_stops!inner(store_id))')
+      .from('returns').select('qty_returned, returned_on, delivery_line_id, delivery_lines!inner(plan_stop_id, plan_stops!inner(store_id))')
       .eq('delivery_lines.plan_stops.store_id', store.id).gte('returned_on', pmStart).lte('returned_on', pmCutoff)
 
-    const byDay = {}
-    ;(dlsThis || []).forEach(d => { byDay[d.delivered_on] = (byDay[d.delivered_on] || 0) + d.qty_delivered })
-    ;(retsThis || []).forEach(r => { byDay[r.returned_on] = (byDay[r.returned_on] || 0) - r.qty_returned })
+    // Per-visit aggregation: one point per delivery date, returns attributed
+    // back to the delivery they came from (not the day they were collected).
+    const lineToDate = {}
+    ;(dlsThis || []).forEach(d => { lineToDate[d.id] = d.delivered_on })
 
-    const days = []
-    let cursor = new Date(mStart)
-    const end = new Date(today)
-    while (cursor <= end) {
-      const key = isoDate(cursor)
-      days.push({ date: key, value: Math.max(0, byDay[key] || 0) })
-      cursor = addDays(cursor, 1)
-    }
-    setStoreDaily(days)
-    const thisTotal = days.reduce((a, d) => a + d.value, 0)
-    setStoreMonthTotal(thisTotal)
+    const byVisit = {}
+    ;(dlsThis || []).forEach(d => {
+      byVisit[d.delivered_on] = (byVisit[d.delivered_on] || 0) + d.qty_delivered
+    })
+    ;(retsThis || []).forEach(r => {
+      const visitDate = lineToDate[r.delivery_line_id]
+      if (visitDate) byVisit[visitDate] = (byVisit[visitDate] || 0) - r.qty_returned
+    })
+
+    const visits = Object.keys(byVisit).sort().map(date => ({ date, value: byVisit[date] }))
+    setStoreDaily(visits)
+    setStoreMonthTotal(visits.reduce((a, v) => a + v.value, 0))
 
     const lastDelivered = (dlsLast || []).reduce((a, d) => a + d.qty_delivered, 0)
     const lastReturned = (retsLast || []).reduce((a, r) => a + r.qty_returned, 0)
