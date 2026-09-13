@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X } from 'lucide-react'
+import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 
 const today = () => new Date().toISOString().slice(0, 10)
 const START_HOUR = 9
@@ -380,6 +380,47 @@ export default function PlanViewScreen() {
     setActiveCompleteStop(null)
   }
 
+  const [dragIdx, setDragIdx] = useState(null)
+  const [overIdx, setOverIdx] = useState(null)
+  const [dragY, setDragY] = useState(0)
+
+  // Pointer events rather than HTML5 drag-and-drop, which never fires on
+  // mobile browsers — where this list is actually used.
+  function startDrag(e, idx) {
+    e.preventDefault()
+    setDragIdx(idx)
+    setOverIdx(idx)
+    let target = idx
+    const startY = e.clientY
+    const move = ev => {
+      const pt = ev.touches ? ev.touches[0] : ev
+      setDragY(pt.clientY - startY)
+      const el = document.elementFromPoint(pt.clientX, pt.clientY)
+      const row = el && el.closest('[data-stop-idx]')
+      if (row) { target = Number(row.getAttribute('data-stop-idx')); setOverIdx(target) }
+    }
+    const end = () => {
+      if (target !== idx) {
+        setOrder(prev => {
+          const next = [...prev]
+          const [moved] = next.splice(idx, 1)
+          next.splice(target, 0, moved)
+          return next
+        })
+        const movedId = order[idx]
+        // A stop placed by hand is locked so re-optimising cannot undo it.
+        if (movedId) setLocked(l => ({ ...l, [movedId]: true }))
+      }
+      setDragIdx(null)
+      setOverIdx(null)
+      setDragY(0)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', end)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', end)
+  }
+
   const orderedStops = order.map(id => stops.find(s => s.store_id === id)).filter(Boolean)
   let cumMinutes = 0
   const legInfo = orderedStops.map((s, idx) => {
@@ -477,9 +518,21 @@ export default function PlanViewScreen() {
         {orderedStops.map((stop, idx) => {
           const isDone = completedStopIds.has(stop.id)
           return (
-            <div key={stop.id} className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone ? 'opacity-60' : ''}`}>
+            <div key={stop.id} data-stop-idx={idx}
+              style={(() => {
+                if (dragIdx === idx) return { transform: `translateY(${dragY}px) scale(1.03)`, zIndex: 30, position: 'relative', boxShadow: '0 12px 28px rgba(0,0,0,.45)', transition: 'none', pointerEvents: 'none' }
+                if (dragIdx === null || overIdx === null) return undefined
+                if (idx > dragIdx && idx <= overIdx) return { transform: 'translateY(-6px)' }
+                if (idx < dragIdx && idx >= overIdx) return { transform: 'translateY(6px)' }
+                return undefined
+              })()}
+              className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone ? 'opacity-60' : ''} ${dragIdx === idx ? 'ring-2 ring-[var(--accent)]' : 'transition-transform duration-150'} ${dragIdx !== null && dragIdx !== idx ? 'opacity-70' : ''}`}>
               <div className="flex items-start justify-between mb-1">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <span onPointerDown={e => startDrag(e, idx)}
+                    className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0 cursor-grab active:cursor-grabbing touch-none">
+                    <GripVertical size={14} className={dragIdx === idx ? 'text-[var(--accent)]' : ''} />
+                  </span>
                   <button onClick={() => toggleLock(stop.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
                     {locked[stop.store_id] ? <Lock size={13} className="text-[var(--text-gold)]" /> : <Unlock size={13} />}
                   </button>
@@ -503,8 +556,8 @@ export default function PlanViewScreen() {
                   </span>
                 ) : (
                   <button onClick={() => openCompleteForm(stop)}
-                    className="flex items-center gap-1.5 text-[var(--text-accent)] hover:text-[var(--text-accent2)] text-xs font-medium">
-                    <Circle size={14} /> Mark delivered
+                    className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-accent)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
+                    <ClipboardCheck size={13} /> Record delivery <ChevronRight size={12} className="opacity-70" />
                   </button>
                 )}
               </div>
@@ -514,8 +567,8 @@ export default function PlanViewScreen() {
       </div>
 
       {activeCompleteStop && (
-        <div className="absolute inset-0 bg-[var(--bg-root)]/95 flex flex-col">
-          <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
+        <div className="absolute inset-0 bg-[var(--bg-root)]/70 backdrop-blur-2xl backdrop-saturate-150 flex flex-col">
+          <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0 bg-[var(--bg-card)]/40 backdrop-blur-xl">
             <h2 className="text-[var(--text-primary)] font-semibold">{activeCompleteStop.stores?.name}</h2>
             <button onClick={() => setActiveCompleteStop(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
           </div>
@@ -529,7 +582,7 @@ export default function PlanViewScreen() {
               const needsReturnLine = Number(line.qty_returned) > 0 && !line.return_line_id
               const req = { sku_id: row.sku_id }
               return (
-                <div key={row.key} className="bg-[var(--bg-card)] rounded-xl p-4">
+                <div key={row.key} className="bg-[var(--bg-card)]/80 backdrop-blur-xl border border-[var(--bg-input)]/40 rounded-xl p-4">
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-[var(--text-primary)] text-sm font-medium">{row.name}{row.extra && <span className="text-[var(--text-gold)] text-xs ml-2">trial</span>}</span>
                     {row.extra && <button onClick={() => removeExtraSku(row.sku_id)} className="text-[var(--text-muted2)] hover:text-red-400"><X size={14} /></button>}
