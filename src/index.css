@@ -1,0 +1,64 @@
+@import "tailwindcss";
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+:root {
+  --bg-root: #F7FAF8;
+  --bg-card: #FFFFFF;
+  --bg-input: #EDF3EE;
+  --bg-hover: #E3ECE5;
+  --bg-hover2: #D5E3D8;
+  --bg-success-surface: #E3F0E6;
+  --bg-amber-surface: #FFF3D6;
+  --bg-orange-surface: #FDEBD8;
+
+  --border-card: #FFFFFF;
+  --border-input: #E3ECE5;
+  --border-input2: #EDF3EE;
+  --border-amber-surface: #FFF3D6;
+  --border-accent: #4C7A5C;
+
+  --text-primary: #16281F;
+  --text-heading2: #2A4038;
+  --text-secondary: #3E594C;
+  --text-muted: #5C7469;
+  --text-muted2: #7A9488;
+  --text-faint: #9CAEA4;
+  --text-accent: #4C7A5C;
+  --text-accent2: #5C8F6B;
+  --text-brand: #6D9773;
+  --text-amber: #B46617;
+  --text-amber2: #c9781f;
+  --text-gold: #FFBA00;
+
+  --accent: #6D9773;
+  --accent-hover: #5f8567;
+  --warn: #B46617;
+}
+
+[data-theme="dark"] {
+  --bg-root: #04140f;
+  --bg-card: #0c3b2e;
+  --bg-input: #123d2f;
+  --bg-hover: #1a5142;
+  --bg-hover2: #236152;
+  --bg-success-surface: #0f2a20;
+  --bg-amber-surface: #4d3a00;
+  --bg-orange-surface: #3d2400;
+
+  --border-card: #0c3b2e;
+  --border-input: #1a5142;
+  --border-input2: #123d2f;
+  --border-amber-surface: #4d3a00;
+  --border-accent: #8fbf9a;
+
+  --text-primary: #FFFFFF;
+  --text-heading2: #dce8e2;
+  --text-secondary: #c5d6cd;
+  --text-muted: #9fb8ac;
+  --text-muted2: #7a9488;
+  --text-faint: #5c7469;
+  --text-accent: #8fbf9a;
+  --text-accent2: #a8d4b3;
+  --text-amber: #ffc933;
+  --text-amber2: #c9781f;
+}
