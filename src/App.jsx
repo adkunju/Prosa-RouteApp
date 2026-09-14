@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
 import AuthGate from './AuthGate'
 import DashboardScreen from './DashboardScreen'
@@ -21,6 +21,11 @@ const NAV = [
 
 function PlanHub() {
   const [tab, setTab] = useState('allocation')
+  useEffect(() => {
+    const go = e => { if (e.detail?.tab) setTab(e.detail.tab) }
+    window.addEventListener('prosa:goto', go)
+    return () => window.removeEventListener('prosa:goto', go)
+  }, [])
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex border-b border-[var(--bg-input)] shrink-0 overflow-x-auto">

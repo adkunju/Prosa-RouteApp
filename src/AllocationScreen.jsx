@@ -322,13 +322,20 @@ export default function AllocationScreen() {
 
       {dueRows.length > 0 && (
         <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
-          <button
-            onClick={createPlan}
-            disabled={saving || saved}
-            className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors"
-          >
-            {saved ? <><CheckCircle size={18} /> Plan created!</> : saving ? 'Saving...' : `Create Plan for ${planDate}`}
-          </button>
+        <button
+          onClick={() => {
+            const totals = Object.entries(totalsBySku)
+              .filter(([, q]) => Number(q) > 0)
+              .map(([sku_name, qty]) => ({ sku_name, qty }))
+            if (totals.length === 0) return
+            sessionStorage.setItem('prosa_production_prefill', JSON.stringify({ date: planDate, totals }))
+            window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { tab: 'production' } }))
+          }}
+          disabled={Object.values(totalsBySku).every(q => !Number(q))}
+          className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors"
+        >
+          Move to production
+        </button>
         </div>
       )}
     </div>

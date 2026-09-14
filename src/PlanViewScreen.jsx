@@ -132,7 +132,7 @@ export default function PlanViewScreen() {
 
   async function loadBatches() {
     const { data } = await supabase.from('production_batches')
-      .select('id, sku_id, produced_on, expires_on, qty')
+      .select('id, sku_id, produced_on, expires_on, qty, delivery_lines(qty_delivered)')
       .gt('expires_on', today())
       .order('produced_on')
     setBatches(data || [])
@@ -594,7 +594,7 @@ export default function PlanViewScreen() {
                       className={`w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ${needsBatch ? 'ring-2 ring-red-500' : 'focus:ring-[var(--accent)]'}`}>
                       <option value="">Select batch...</option>
                       {skuBatches.map(b => (
-                        <option key={b.id} value={b.id}>{b.produced_on} · expires {b.expires_on} · {b.qty} pcs</option>
+                        <option key={b.id} value={b.id}>{b.produced_on} · expires {b.expires_on} · {Math.max(0, b.qty - (b.delivery_lines || []).reduce((n, l) => n + (l.qty_delivered || 0), 0))} pcs left</option>
                       ))}
                     </select>
                     {skuBatches.length === 0 && <p className="text-[var(--text-gold)] text-xs mt-1">⚠ No active batches for this product</p>}

@@ -22,6 +22,8 @@ export default function ProductionScreen() {
   const [form, setForm] = useState({ sku_id: '', qty: '', produced_on: new Date().toISOString().slice(0, 10) })
   const [editingBatch, setEditingBatch] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
+  const [prefill, setPrefill] = useState(null)
+  const [creating, setCreating] = useState(false)
 
   async function load() {
     const [{ data: b }, { data: s }, { data: dl }] = await Promise.all([
@@ -36,6 +38,36 @@ export default function ProductionScreen() {
   }
 
   useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem('prosa_production_prefill')
+    if (raw) { try { setPrefill(JSON.parse(raw)) } catch { /* ignore */ } }
+  }, [])
+
+  // Turn the allocation totals into one batch per SKU.
+  async function createFromAllocation() {
+    if (!prefill) return
+    setCreating(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    for (const row of prefill.totals) {
+      const sku = skus.find(s => s.name === row.sku_name)
+      if (!sku) continue
+      const { data: skuData } = await supabase.from('skus').select('shelf_life_days').eq('id', sku.id).single()
+      const exp = new Date(prefill.date)
+      exp.setDate(exp.getDate() + (skuData?.shelf_life_days || 5))
+      await supabase.from('production_batches').insert({
+        user_id: user.id,
+        sku_id: sku.id,
+        qty: Number(row.qty),
+        produced_on: prefill.date,
+        expires_on: exp.toISOString().slice(0, 10),
+      })
+    }
+    sessionStorage.removeItem('prosa_production_prefill')
+    setPrefill(null)
+    setCreating(false)
+    await load()
+  }
 
   function setField(k, v) { setForm(f => ({ ...f, [k]: v })) }
 
@@ -86,8 +118,30 @@ export default function ProductionScreen() {
   const activeBatches = batches.filter(b => daysLeft(b.expires_on) > 0)
   const expiredBatches = batches.filter(b => daysLeft(b.expires_on) <= 0)
 
+  const banner = prefill && (
+    <div className="mx-4 mt-4 bg-[var(--bg-card)]/60 border border-[var(--accent)]/40 rounded-2xl p-4">
+      <div className="text-[var(--text-primary)] text-sm font-medium mb-1">Production from allocation</div>
+      <p className="text-[var(--text-muted2)] text-xs mb-3">For {prefill.date}</p>
+      {prefill.totals.map(t => (
+        <div key={t.sku_name} className="flex justify-between text-sm py-1 border-t border-[var(--bg-input)]/40">
+          <span className="text-[var(--text-secondary)]">{t.sku_name}</span>
+          <span className="text-[var(--text-accent)] font-semibold">{t.qty} pcs</span>
+        </div>
+      ))}
+      <div className="flex gap-2 mt-3">
+        <button onClick={createFromAllocation} disabled={creating}
+          className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-sm font-medium rounded-xl py-2.5 transition-colors">
+          {creating ? 'Creating...' : 'Confirm production'}
+        </button>
+        <button onClick={() => { sessionStorage.removeItem('prosa_production_prefill'); setPrefill(null) }}
+          className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-sm px-3">Dismiss</button>
+      </div>
+    </div>
+  )
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
+      {banner}
       {/* Header */}
       <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
         <span className="text-[var(--text-muted)] text-sm">{activeBatches.length} active batch{activeBatches.length !== 1 ? 'es' : ''}</span>
