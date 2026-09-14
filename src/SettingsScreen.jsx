@@ -6,8 +6,10 @@ import { supabase } from './supabaseClient'
 import { Package, Route, Store, ChevronRight, LogOut, RefreshCw, Sun, Moon, ClipboardList } from 'lucide-react'
 import BulkSyncPanel from './BulkSyncPanel'
 import LogScreen from './LogScreen'
+import { useSettings } from './useSettings'
 
 export default function SettingsScreen({ theme, setTheme }) {
+  const { settings, update } = useSettings()
   const [section, setSection] = useState(null) // null | 'skus' | 'matrix' | 'stores'
 
   if (section === 'skus') {
@@ -106,6 +108,36 @@ export default function SettingsScreen({ theme, setTheme }) {
         </span>
         <ChevronRight size={16} className="text-[var(--text-muted2)]" />
       </button>
+
+      <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 mt-2">
+        <div className="text-[var(--text-primary)] text-sm font-medium mb-1">Delivery days per week</div>
+        <p className="text-[var(--text-muted2)] text-xs mb-3">How many days the schedule spreads work across.</p>
+        <div className="flex gap-1.5">
+          {[1,2,3,4,5,6,7].map(n => (
+            <button key={n} onClick={() => update({ delivery_days_per_week: n })}
+              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${settings.delivery_days_per_week === n ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-input)] text-[var(--text-muted)]'}`}>
+              {n}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[var(--text-primary)] text-sm font-medium">Working hours per day</span>
+          <span className="text-[var(--text-accent)] text-sm font-semibold">
+            {Math.floor(settings.daily_budget_min / 60)}h{settings.daily_budget_min % 60 ? ` ${settings.daily_budget_min % 60}m` : ''}
+          </span>
+        </div>
+        <p className="text-[var(--text-muted2)] text-xs mb-3">Driving plus time spent at each stop.</p>
+        <input type="range" min={120} max={720} step={30}
+          value={settings.daily_budget_min}
+          onChange={ev => update({ daily_budget_min: Number(ev.target.value) })}
+          className="w-full accent-[var(--accent)]" />
+        <div className="flex justify-between text-[var(--text-muted2)] text-[10px] mt-1">
+          <span>2h</span><span>12h</span>
+        </div>
+      </div>
 
       <div className="bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--border-card)] rounded-2xl p-4 flex items-center justify-between mt-2">
         <span className="flex items-center gap-3 text-[var(--text-primary)] text-sm font-medium">

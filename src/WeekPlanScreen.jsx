@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { supabase } from './supabaseClient'
+import { useSettings } from './useSettings'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
 import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package } from 'lucide-react'
 
@@ -31,6 +32,9 @@ export default function WeekPlanScreen() {
   const [saved, setSaved] = useState(false)
   const [dueStores, setDueStores] = useState([]) // [{store_id, name, service_minutes, due_date, bearing, skuReqs:[{sku_id,name,qty}]}]
   const [assignment, setAssignment] = useState({}) // storeId -> dayIndex
+  const { settings, loaded: settingsLoaded } = useSettings()
+  const NUM_DAYS = settings.delivery_days_per_week
+  const DAILY_BUDGET_MIN = settings.daily_budget_min
   const [locked, setLocked] = useState({}) // storeId -> bool
   const [pickupDue, setPickupDue] = useState([])
   const [matrixMap, setMatrixMap] = useState({})
@@ -138,7 +142,7 @@ export default function WeekPlanScreen() {
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { if (settingsLoaded) load() }, [settingsLoaded, NUM_DAYS, DAILY_BUDGET_MIN])
 
   function moveStore(storeId, newDay) {
     setAssignment(a => ({ ...a, [storeId]: newDay }))
