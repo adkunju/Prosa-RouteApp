@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import QuickDeliverModal from './QuickDeliverModal'
+import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -112,6 +114,8 @@ export default function PlanViewScreen() {
   const [matrixMeters, setMatrixMeters] = useState({})
   const [metric, setMetric] = useState('seconds')
   const [order, setOrder] = useState([])
+  const [quickOpen, setQuickOpen] = useState(false)
+  const phones = useStoreContacts()
   const [priorLines, setPriorLines] = useState({})   // sku_id -> earlier delivery lines
   const [allSkus, setAllSkus] = useState([])
   const [extraReqs, setExtraReqs] = useState([])     // impulse-added SKUs
@@ -485,9 +489,15 @@ export default function PlanViewScreen() {
           </div>
           <div className="px-4 py-2 bg-[var(--bg-root)] border-b border-[var(--bg-card)] flex items-center justify-between text-xs text-[var(--text-muted)] shrink-0">
             <span>{Math.round(totalSeconds / 60)} min drive · {(totalMeters / 1000).toFixed(1)} km · {completedCount}/{orderedStops.length} done</span>
-            <button onClick={saveOrder} disabled={saving} className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)] disabled:opacity-50">
-              {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <span className="text-[var(--accent)]">Saved!</span> : <><Save size={13} /> Save order</>}
-            </button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => setQuickOpen(true)}
+                className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)]">
+                + Off-plan stop
+              </button>
+              <button onClick={saveOrder} disabled={saving} className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)] disabled:opacity-50">
+                {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <span className="text-[var(--accent)]">Saved!</span> : <><Save size={13} /> Save order</>}
+              </button>
+            </div>
           </div>
           {mapsLinks.length > 0 && (
             <div className="px-4 py-3 border-b border-[var(--bg-input)] flex flex-col gap-2 shrink-0">
@@ -537,6 +547,7 @@ export default function PlanViewScreen() {
                     {locked[stop.store_id] ? <Lock size={13} className="text-[var(--text-gold)]" /> : <Unlock size={13} />}
                   </button>
                   <span className="text-[var(--text-primary)] text-sm font-medium truncate">{idx + 1}. {stop.stores?.name}</span>
+                  <ContactButtons phone={phones[stop.store_id]} />
                 </div>
                 <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0)}</span>
               </div>
@@ -565,6 +576,8 @@ export default function PlanViewScreen() {
           )
         })}
       </div>
+
+      {quickOpen && <QuickDeliverModal onClose={() => setQuickOpen(false)} onSaved={() => loadPlan?.()} />}
 
       {activeCompleteStop && (
         <div className="absolute inset-0 bg-[var(--bg-root)]/70 backdrop-blur-2xl backdrop-saturate-150 flex flex-col">

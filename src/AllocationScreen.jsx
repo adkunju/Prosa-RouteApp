@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { computeProposedQty } from './forecastMath'
 import { Package, CheckCircle, ChevronDown } from 'lucide-react'
 
@@ -13,6 +14,7 @@ export default function AllocationScreen() {
   const [saved, setSaved] = useState(false)
   const [planDate, setPlanDate] = useState(today())
   const [horizon, setHorizon] = useState(1)
+  const phones = useStoreContacts()
   const [caps, setCaps] = useState({})        // sku_name -> capacity
   const [rationed, setRationed] = useState(null) // summary after applying
   const [showSkipped, setShowSkipped] = useState(false) // days ahead to include as "due"
@@ -282,7 +284,10 @@ export default function AllocationScreen() {
           <div key={`${row.store_id}-${row.sku_id}`} className="bg-[var(--bg-card)] rounded-xl p-3">
             <div className="flex items-start justify-between mb-1.5">
               <div className="min-w-0 flex-1">
-                <div className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</span>
+                  <ContactButtons phone={phones[row.store_id]} />
+                </div>
                 <div className="text-[var(--text-muted)] text-xs mt-0.5">
                   {row.sku_name}
                   {row.last_visit_date && <span className="text-[var(--text-faint)]"> · last {row.last_visit_date}</span>}

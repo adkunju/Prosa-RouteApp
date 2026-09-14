@@ -269,7 +269,6 @@ export default function WeekPlanScreen() {
 
     for (let day = 0; day < NUM_DAYS; day++) {
       const stops = byDay[day]
-      if (stops.length === 0) continue
       const planDate = planDates[day] || dateForOffset(day)
 
       let planId
@@ -278,6 +277,20 @@ export default function WeekPlanScreen() {
         const { data: np } = await supabase.from('plans').insert({ user_id: user.id, plan_date: planDate, status: 'draft' }).select('id').single()
         planId = np?.id
       }
+      // Drop stops that are no longer assigned to this day. A stop that already
+      // has delivery lines is history and is never removed.
+      const keep = new Set(stops.map(s => s.store_id))
+      const { data: current } = await supabase.from('plan_stops')
+        .select('id, store_id, delivery_lines(id)').eq('plan_id', planId)
+      for (const ps of current || []) {
+        if (keep.has(ps.store_id)) continue
+        if ((ps.delivery_lines || []).length > 0) continue
+        await supabase.from('requirements').delete().eq('plan_stop_id', ps.id)
+        await supabase.from('plan_stops').delete().eq('id', ps.id)
+      }
+
+      if (stops.length === 0) continue
+
       const { count } = await supabase.from('plan_stops').select('id', { count: 'exact', head: true }).eq('plan_id', planId)
       let stopOrder = (count || 0) + 1
 

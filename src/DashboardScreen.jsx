@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import StoreMap from './StoreMap'
+import QuickDeliverModal from './QuickDeliverModal'
+import AddStoreModal from './AddStoreModal'
 import { ArrowUp, ArrowDown, Minus, X, Clock, Navigation } from 'lucide-react'
 
 function isoDate(d) { return d.toISOString().slice(0, 10) }
@@ -48,6 +50,9 @@ export default function DashboardScreen() {
   const [stores, setStores] = useState([])
   const [depot, setDepot] = useState(null)
   const [showFullMap, setShowFullMap] = useState(false)
+  const [quickOpen, setQuickOpen] = useState(false)
+  const [addStoreOpen, setAddStoreOpen] = useState(false)
+  const [stock, setStock] = useState([])
   const [selectedStore, setSelectedStore] = useState(null)
   const [storeDaily, setStoreDaily] = useState([])
   const [storeMonthTotal, setStoreMonthTotal] = useState(0)
@@ -152,6 +157,19 @@ export default function DashboardScreen() {
     }
   }
 
+  useEffect(() => { (async () => {
+    const [{ data: b }, { data: dl }] = await Promise.all([
+      supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, skus(name)').order('expires_on'),
+      supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
+    ])
+    const used = {}
+    ;(dl || []).forEach(x => { used[x.batch_id] = (used[x.batch_id] || 0) + x.qty_delivered })
+    const today = new Date().toISOString().slice(0, 10)
+    setStock((b || [])
+      .map(x => ({ ...x, available: x.qty - (used[x.id] || 0) }))
+      .filter(x => x.available > 0 && x.expires_on >= today))
+  })() }, [])
+
   if (loading || !stats) {
     return <div className="flex-1 flex items-center justify-center text-[var(--text-muted2)]">Loading dashboard...</div>
   }
@@ -173,6 +191,56 @@ export default function DashboardScreen() {
           <Ticker current={stats.activeThisMonth} previous={stats.activeLastMonth} />
         </div>
       </div>
+
+      <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[var(--text-muted)] text-xs">Stock in hand</span>
+          <span className="text-[var(--text-muted2)] text-xs">{stock.length} batch{stock.length !== 1 ? 'es' : ''}</span>
+        </div>
+        {stock.length === 0 ? (
+          <p className="text-[var(--text-muted2)] text-sm">Nothing in stock</p>
+        ) : (
+          <>
+            {Object.entries(stock.reduce((acc, b) => {
+              const n = b.skus?.name || 'Unknown'
+              acc[n] = (acc[n] || 0) + b.available
+              return acc
+            }, {})).map(([name, qty]) => (
+              <div key={name} className="flex justify-between text-sm py-1">
+                <span className="text-[var(--text-secondary)]">{name}</span>
+                <span className="text-[var(--text-primary)] font-semibold">{qty} pcs</span>
+              </div>
+            ))}
+            <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40">
+              {stock.map(b => {
+                const days = Math.ceil((new Date(b.expires_on) - new Date()) / 86400000)
+                return (
+                  <div key={b.id} className="flex justify-between text-xs py-0.5">
+                    <span className="text-[var(--text-muted2)]">{b.skus?.name} · made {b.produced_on}</span>
+                    <span className={days <= 1 ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted)]'}>
+                      {b.available} pcs · {days}d left
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex gap-2">
+        <button onClick={() => setQuickOpen(true)}
+          className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold rounded-2xl py-3 transition-colors">
+          Quick delivery
+        </button>
+        <button onClick={() => setAddStoreOpen(true)}
+          className="shrink-0 bg-[var(--bg-card)]/60 hover:bg-[var(--bg-input)]/60 border border-[var(--bg-input)]/50 text-[var(--text-secondary)] text-sm font-medium rounded-2xl px-4 transition-colors">
+          + Store
+        </button>
+      </div>
+
+      {quickOpen && <QuickDeliverModal onClose={() => setQuickOpen(false)} onSaved={() => window.location.reload()} />}
+      {addStoreOpen && <AddStoreModal onClose={() => setAddStoreOpen(false)} onSaved={() => window.location.reload()} />}
 
       <button onClick={() => setShowFullMap(true)}
         className="relative h-40 rounded-2xl overflow-hidden bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50">

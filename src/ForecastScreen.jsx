@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { TrendingUp, AlertTriangle, Clock } from 'lucide-react'
 
 function daysUntil(dateStr) {
@@ -16,6 +17,7 @@ function DueBadge({ dateStr }) {
 }
 
 export default function ForecastScreen() {
+  const phones = useStoreContacts()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState('due')
@@ -81,7 +83,10 @@ export default function ForecastScreen() {
           <div key={`${row.store_id}-${row.sku_id}`} className="bg-[var(--bg-card)] rounded-xl p-4">
             <div className="flex items-start justify-between mb-2">
               <div className="min-w-0 flex-1">
-                <div className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</span>
+                  <ContactButtons phone={phones[row.store_id]} />
+                </div>
                 <div className="text-[var(--text-muted)] text-xs mt-0.5">{row.sku_name}</div>
               </div>
               <DueBadge dateStr={row.next_visit_due} />
