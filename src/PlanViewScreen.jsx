@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import QuickDeliverModal from './QuickDeliverModal'
+import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 
@@ -103,6 +104,34 @@ function buildMapsLinks(depot, orderedStoreObjs) {
   })
 }
 
+
+function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
+  const [q, setQ] = useState('')
+  const [all, setAll] = useState([])
+  useEffect(() => {
+    supabase.from('stores').select('id,name').eq('is_active', true).eq('is_depot', false).order('name')
+      .then(({ data }) => setAll(data || []))
+  }, [])
+  const matches = q.length > 1
+    ? all.filter(s => s.name.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
+    : []
+  return (
+    <>
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search store..."
+        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-2" />
+      {matches.map(s => (
+        <button key={s.id} onClick={async () => {
+          const maxStop = stops.length + 1
+          await supabase.from('plan_stops').insert({ plan_id: planId, store_id: s.id, stop_order: maxStop })
+          onAdded()
+        }} className="w-full text-left bg-[var(--bg-card)]/70 hover:bg-[var(--bg-input)]/60 rounded-xl px-4 py-3 mb-1.5 text-[var(--text-secondary)] text-sm transition-colors">
+          {s.name}
+        </button>
+      ))}
+    </>
+  )
+}
+
 export default function PlanViewScreen() {
   const [dates, setDates] = useState([])
   const [selectedDate, setSelectedDate] = useState(today())
@@ -115,6 +144,8 @@ export default function PlanViewScreen() {
   const [metric, setMetric] = useState('seconds')
   const [order, setOrder] = useState([])
   const [quickOpen, setQuickOpen] = useState(false)
+  const [planId, setPlanId] = useState(null)
+  const [addStopOpen, setAddStopOpen] = useState(false)
   const phones = useStoreContacts()
   const [priorLines, setPriorLines] = useState({})   // sku_id -> earlier delivery lines
   const [allSkus, setAllSkus] = useState([])
@@ -162,6 +193,7 @@ export default function PlanViewScreen() {
   async function loadPlan(date) {
     setLoading(true)
     const { data: plan } = await supabase.from('plans').select('id, status').eq('plan_date', date).maybeSingle()
+    setPlanId(plan?.id || null)
     if (!plan) { setStops([]); setOrder([]); setLoading(false); return }
 
     const { data } = await supabase
@@ -170,7 +202,7 @@ export default function PlanViewScreen() {
       .eq('plan_id', plan.id)
       .order('stop_order')
 
-    const withReqs = (data || []).filter(s => s.requirements && s.requirements.length > 0)
+    const withReqs = data || []
     setStops(withReqs)
     const lockMap = {}
     withReqs.forEach(s => { lockMap[s.store_id] = s.locked })
@@ -494,6 +526,10 @@ export default function PlanViewScreen() {
                 className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)]">
                 + Off-plan stop
               </button>
+              <button onClick={() => setAddStopOpen(true)}
+                className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)]">
+                + Add stop
+              </button>
               <button onClick={saveOrder} disabled={saving} className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)] disabled:opacity-50">
                 {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <span className="text-[var(--accent)]">Saved!</span> : <><Save size={13} /> Save order</>}
               </button>
@@ -554,6 +590,9 @@ export default function PlanViewScreen() {
               <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1">
                 +{Math.round(legInfo[idx]?.legMinutes || 0)} min · {(legInfo[idx]?.legKm || 0).toFixed(1)} km from previous
               </div>
+              {(!stop.requirements || stop.requirements.length === 0) && (
+                <div className="text-[var(--text-muted2)] text-xs pl-5 italic">Visit only — no delivery planned</div>
+              )}
               {stop.requirements?.map(req => {
                 const qty = req.approved_qty ?? req.proposed_qty
                 const moq = req.skus?.min_delivery_qty || 0
@@ -573,10 +612,17 @@ export default function PlanViewScreen() {
                     <CheckCircle size={14} /> Delivered
                   </span>
                 ) : (
-                  <button onClick={() => openCompleteForm(stop)}
-                    className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-accent)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
-                    <ClipboardCheck size={13} /> Record delivery <ChevronRight size={12} className="opacity-70" />
-                  </button>
+                  (!stop.requirements || stop.requirements.length === 0) ? (
+                    <button onClick={() => setCompletedStopIds(s => new Set([...s, stop.id]))}
+                      className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-muted)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
+                      ✓ Mark visited
+                    </button>
+                  ) : (
+                    <button onClick={() => openCompleteForm(stop)}
+                      className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-accent)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
+                      <ClipboardCheck size={13} /> Record delivery <ChevronRight size={12} className="opacity-70" />
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -585,6 +631,20 @@ export default function PlanViewScreen() {
       </div>
 
       {quickOpen && <QuickDeliverModal onClose={() => setQuickOpen(false)} onSaved={() => loadPlan?.()} />}
+      {addStopOpen && planId && (
+        <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
+          <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0">
+            <span className="text-[var(--text-primary)] font-semibold">Add stop to today</span>
+            <button onClick={() => setAddStopOpen(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            <p className="text-[var(--text-muted2)] text-xs mb-4">Search for a store to add as a visit-only stop. No delivery will be planned — use this for prospecting or relationship visits.</p>
+            <AddStopPanel planId={planId} stops={stops} selectedDate={selectedDate}
+              onClose={() => setAddStopOpen(false)}
+              onAdded={() => { setAddStopOpen(false); loadPlan(selectedDate) }} />
+          </div>
+        </div>
+      )}
 
       {activeCompleteStop && (
         <div className="absolute inset-0 bg-[var(--bg-root)]/70 backdrop-blur-2xl backdrop-saturate-150 flex flex-col">
