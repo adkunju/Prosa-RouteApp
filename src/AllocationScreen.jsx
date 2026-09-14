@@ -12,7 +12,10 @@ export default function AllocationScreen() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [planDate, setPlanDate] = useState(today())
-  const [horizon, setHorizon] = useState(1) // days ahead to include as "due"
+  const [horizon, setHorizon] = useState(1)
+  const [caps, setCaps] = useState({})        // sku_name -> capacity
+  const [rationed, setRationed] = useState(null) // summary after applying
+  const [showSkipped, setShowSkipped] = useState(false) // days ahead to include as "due"
 
   async function load() {
     setLoading(true)
@@ -51,6 +54,43 @@ export default function AllocationScreen() {
     acc[row.sku_name] = (acc[row.sku_name] || 0) + (Number(row.proposed) || 0)
     return acc
   }, {})
+
+  // Ration a limited batch across stores: most urgent first, then fastest
+  // selling. A store gets its full ask or nothing — a token drop looks bad on
+  // the shelf and wastes stock that another store could have sold.
+  function applyCapacity() {
+    const next = { ...qtys }
+    const summary = {}
+
+    Object.entries(caps).forEach(([skuName, capRaw]) => {
+      const cap = Number(capRaw)
+      if (capRaw === '' || isNaN(cap)) return
+
+      const rows = dueRows
+        .filter(r => r.sku_name === skuName)
+        .sort((a, b) => {
+          const d = String(a.next_visit_due).localeCompare(String(b.next_visit_due))
+          if (d !== 0) return d
+          return (Number(b.avg_daily_rate) || 0) - (Number(a.avg_daily_rate) || 0)
+        })
+
+      let left = cap
+      const served = [], cut = []
+      rows.forEach(r => {
+        const moq = Number(r.min_delivery_qty) || 1
+        const want = Number(r.proposed) || 0
+        const key = `${r.store_id}-${r.sku_id}`
+        if (want <= 0) { next[key] = 0; return }
+        if (left >= want) { next[key] = want; left -= want; served.push(r.store_name) }
+        else if (left >= moq && left > 0) { next[key] = left; served.push(r.store_name + ' (short)'); left = 0 }
+        else { next[key] = 0; cut.push(r.store_name) }
+      })
+      summary[skuName] = { cap, used: cap - left, served: served.length, cut }
+    })
+
+    setQtys(next)
+    setRationed(summary)
+  }
 
   const totalsBySku = dueRows.reduce((acc, row) => {
     const qty = Number(getQty(row)) || 0
@@ -149,6 +189,7 @@ export default function AllocationScreen() {
             <thead>
               <tr className="text-[var(--text-muted2)]">
                 <th className="text-left font-normal pb-1">Product</th>
+                <th className="text-right font-normal pb-1">Making</th>
                 <th className="text-right font-normal pb-1">Proposed</th>
                 <th className="text-right font-normal pb-1">Approved</th>
               </tr>
@@ -160,6 +201,13 @@ export default function AllocationScreen() {
                 return (
                   <tr key={sku} className="border-t border-[var(--bg-input)]/40">
                     <td className="text-[var(--text-secondary)] py-1.5">{sku}</td>
+                    <td className="text-right py-1.5">
+                      <input type="number" min="0" placeholder="all"
+                        value={caps[sku] ?? ''}
+                        onChange={e => setCaps(p => ({ ...p, [sku]: e.target.value }))}
+                        onKeyDown={e => { if (e.key === 'Enter') applyCapacity() }}
+                        className="bg-[var(--bg-input)] text-[var(--text-primary)] rounded-md px-1.5 py-1 text-xs w-14 text-right outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                    </td>
                     <td className="text-right text-[var(--text-muted)] py-1.5">{prop}</td>
                     <td className="text-right py-1.5">
                       <span className="text-[var(--text-accent)] font-semibold">{qty}</span>
@@ -175,7 +223,52 @@ export default function AllocationScreen() {
             </tbody>
           </table>
         )}
+
+        <div className="flex items-center gap-2 mt-2">
+          <button onClick={applyCapacity}
+            className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
+            Apply limits
+          </button>
+          {rationed && (
+            <button onClick={() => { setQtys({}); setCaps({}); setRationed(null) }}
+              className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs px-2 py-1.5">Reset</button>
+          )}
+          {rationed && (() => {
+            const total = Object.values(rationed).reduce((n, r) => n + r.cut.length, 0)
+            if (total === 0) return null
+            return (
+              <button onClick={() => setShowSkipped(true)}
+                className="text-[var(--text-gold)] hover:underline text-xs">
+                {total} store{total > 1 ? 's' : ''} skipped
+              </button>
+            )
+          })()}
+        </div>
       </div>
+
+      {showSkipped && rationed && (
+        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-xl flex items-center justify-center p-6"
+          onClick={() => setShowSkipped(false)}>
+          <div onClick={e => e.stopPropagation()}
+            className="bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 w-full max-w-sm max-h-[70vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[var(--text-primary)] text-sm font-semibold">Skipped today</span>
+              <button onClick={() => setShowSkipped(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">✕</button>
+            </div>
+            {Object.entries(rationed).map(([sku, r]) => r.cut.length > 0 && (
+              <div key={sku} className="mb-3">
+                <div className="text-[var(--text-muted)] text-xs mb-1.5">{sku} · {r.cut.length}</div>
+                {r.cut.map((n, i) => (
+                  <div key={i} className="text-[var(--text-secondary)] text-sm py-1 border-t border-[var(--bg-input)]/40">
+                    {String(n).replace(/,\s*/, ' - ')}
+                  </div>
+                ))}
+              </div>
+            ))}
+            <p className="text-[var(--text-muted2)] text-xs mt-2">These stay due and move to the front of the queue next time.</p>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
         {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Loading...</div>}
