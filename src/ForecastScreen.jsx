@@ -16,11 +16,68 @@ function DueBadge({ dateStr }) {
   return <span className="text-xs bg-[var(--bg-input)] text-[var(--text-secondary)] px-2 py-0.5 rounded-full whitespace-nowrap">Due in {days}d</span>
 }
 
+
+function VisitHistoryPopup({ storeId, skuId, storeName, skuName, onClose }) {
+  const [lines, setLines] = useState([])
+  const [loading, setLoading] = useState(true)
+  useEffect(() => { (async () => {
+    const { data } = await supabase
+      .from('delivery_lines')
+      .select('id, delivered_on, qty_delivered, store_id, returns(qty_returned), plan_stops(id, visited_at, visit_remark)')
+      .eq('sku_id', skuId)
+      .eq('store_id', storeId)
+      .order('delivered_on', { ascending: false })
+      .limit(30)
+    setLines(data || [])
+    setLoading(false)
+  })() }, [storeId, skuId])
+
+  return (
+    <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col"
+      onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        className="m-4 mt-12 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[75vh] overflow-y-auto shadow-2xl">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-[var(--text-primary)] text-sm font-semibold">{storeName}</div>
+            <div className="text-[var(--text-muted2)] text-xs">{skuName}</div>
+          </div>
+          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">✕</button>
+        </div>
+        {loading && <div className="text-[var(--text-muted2)] text-sm text-center py-4">Loading...</div>}
+        {!loading && lines.length === 0 && <div className="text-[var(--text-muted2)] text-sm text-center py-4">No delivery history</div>}
+        {lines.map((l, i) => {
+          const returned = (l.returns || []).reduce((n, r) => n + (r.qty_returned || 0), 0)
+          const sold = l.qty_delivered - returned
+          const isVisit = l.qty_delivered === 0
+          return (
+            <div key={l.id} className="py-2.5 border-t border-[var(--bg-input)]/40">
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--text-secondary)] text-sm">{l.delivered_on}</span>
+                {isVisit
+                  ? <span className="text-[var(--text-muted2)] text-xs">Visit only</span>
+                  : <span className="text-[var(--text-primary)] text-sm font-medium">{sold} sold</span>}
+              </div>
+              {!isVisit && (
+                <div className="text-[var(--text-muted2)] text-xs mt-0.5">
+                  {l.qty_delivered} delivered{returned > 0 ? ` · ${returned} returned` : ''}
+                </div>
+              )}
+              {l.plan_stops?.visit_remark && <div className="text-[var(--text-muted)] text-xs mt-0.5 italic">{l.plan_stops.visit_remark}</div>}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function ForecastScreen() {
   const phones = useStoreContacts()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState('due')
+  const [visitDetail, setVisitDetail] = useState(null) // {store_id, sku_id, store_name, sku_name}
 
   async function load() {
     setLoading(true)
@@ -87,14 +144,20 @@ export default function ForecastScreen() {
                   <span className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</span>
                   <ContactButtons phone={phones[row.store_id]} />
                 </div>
-                <div className="text-[var(--text-muted)] text-xs mt-0.5">{row.sku_name}</div>
+                <div className="text-[var(--text-muted)] text-xs mt-0.5">
+                  {row.sku_name}
+                  {row.last_visit_date && <span className="text-[var(--text-faint)]"> · last {row.last_visit_date}</span>}
+                </div>
               </div>
               <DueBadge dateStr={row.next_visit_due} />
             </div>
             <div className="flex items-center gap-3 text-xs text-[var(--text-muted)] mt-2">
               <span>{row.avg_daily_rate}/day ± {row.rate_stddev}</span>
               <span className="text-[var(--text-faint)]">·</span>
-              <span>{row.visit_count} visits</span>
+              <button onClick={() => setVisitDetail({ store_id: row.store_id, sku_id: row.sku_id, store_name: row.store_name, sku_name: row.sku_name })}
+                className="text-[var(--text-accent)] hover:underline">
+                {row.visit_count} deliveries
+              </button>
               {row.confidence === 'low' && (
                 <>
                   <span className="text-[var(--text-faint)]">·</span>
@@ -111,6 +174,12 @@ export default function ForecastScreen() {
           </div>
         ))}
       </div>
+      {visitDetail && (
+        <VisitHistoryPopup
+          storeId={visitDetail.store_id} skuId={visitDetail.sku_id}
+          storeName={visitDetail.store_name} skuName={visitDetail.sku_name}
+          onClose={() => setVisitDetail(null)} />
+      )}
     </div>
   )
 }

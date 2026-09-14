@@ -235,7 +235,7 @@ export default function DashboardScreen() {
       <div className="flex gap-2">
         <button onClick={() => setQuickOpen(true)}
           className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold rounded-2xl py-3 transition-colors">
-          Quick delivery
+          Mark delivery / visit
         </button>
         <button onClick={() => setAddStoreOpen(true)}
           className="shrink-0 bg-[var(--bg-card)]/60 hover:bg-[var(--bg-input)]/60 border border-[var(--bg-input)]/50 text-[var(--text-secondary)] text-sm font-medium rounded-2xl px-4 transition-colors">

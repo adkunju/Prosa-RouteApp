@@ -6,6 +6,7 @@ const today = () => new Date().toISOString().slice(0, 10)
 
 export default function QuickDeliverModal({ onClose, onSaved }) {
   const [stores, setStores] = useState([])
+  const [recentIds, setRecentIds] = useState([])
   const [skus, setSkus] = useState([])
   const [batches, setBatches] = useState([])
   const [query, setQuery] = useState('')
@@ -14,22 +15,28 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { (async () => {
-    const [{ data: st }, { data: sk }, { data: b }, { data: dl }] = await Promise.all([
+    const [{ data: st }, { data: sk }, { data: b }, { data: dl }, { data: rdl }] = await Promise.all([
       supabase.from('stores').select('id, name').eq('is_active', true).eq('is_depot', false).order('name'),
+      supabase.from('delivery_lines').select('store_id, delivered_on').order('delivered_on', { ascending: false }).limit(60),
       supabase.from('skus').select('id, name, unit_price').eq('is_active', true).order('name'),
       supabase.from('production_batches').select('id, sku_id, produced_on, expires_on, qty').order('produced_on'),
       supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
     ])
     const used = {}
     ;(dl || []).forEach(d => { used[d.batch_id] = (used[d.batch_id] || 0) + d.qty_delivered })
+    const seen = new Set()
+    const recent = []
+    ;(rdl||[]).forEach(x => { if (!seen.has(x.store_id)) { seen.add(x.store_id); recent.push(x.store_id) } })
+    setRecentIds(recent)
     setStores(st || [])
     setSkus(sk || [])
     setBatches((b || []).map(x => ({ ...x, available: x.qty - (used[x.id] || 0) })))
   })() }, [])
 
+  const recentStores = recentIds.slice(0, 8).map(id => stores.find(s => s.id === id)).filter(Boolean)
   const matches = query.trim()
     ? stores.filter(s => s.name.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 8)
-    : []
+    : recentStores
 
   function batchesFor(skuId) {
     return batches.filter(b => b.sku_id === skuId && b.available > 0 && b.expires_on >= today())
@@ -103,6 +110,7 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
       <div className="flex-1 overflow-y-auto p-4 pb-28">
         {!store && (
           <>
+            {!query && <p className="text-[var(--text-muted2)] text-xs mb-2">Recent stores</p>}
             <div className="relative mb-3">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted2)]" />
               <input autoFocus value={query} onChange={e => setQuery(e.target.value)}
@@ -115,6 +123,9 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
                 {s.name}
               </button>
             ))}
+            {!query && matches.length === 0 && (
+              <p className="text-[var(--text-muted2)] text-sm text-center mt-6">No recent deliveries</p>
+            )}
             {query && matches.length === 0 && (
               <p className="text-[var(--text-muted2)] text-sm text-center mt-6">No store matches that</p>
             )}
