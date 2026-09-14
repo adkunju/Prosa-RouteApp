@@ -110,15 +110,24 @@ export default function SettingsScreen({ theme, setTheme }) {
       </button>
 
       <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 mt-2">
-        <div className="text-[var(--text-primary)] text-sm font-medium mb-1">Delivery days per week</div>
-        <p className="text-[var(--text-muted2)] text-xs mb-3">How many days the schedule spreads work across.</p>
+        <div className="text-[var(--text-primary)] text-sm font-medium mb-1">Delivery days</div>
+        <p className="text-[var(--text-muted2)] text-xs mb-3">Days you run deliveries. Untick the ones you skip.</p>
         <div className="flex gap-1.5">
-          {[1,2,3,4,5,6,7].map(n => (
-            <button key={n} onClick={() => update({ delivery_days_per_week: n })}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${settings.delivery_days_per_week === n ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-input)] text-[var(--text-muted)]'}`}>
-              {n}
-            </button>
-          ))}
+          {[['Mon',1],['Tue',2],['Wed',3],['Thu',4],['Fri',5],['Sat',6],['Sun',7]].map(([label, n]) => {
+            const on = (settings.delivery_weekdays || []).includes(n)
+            return (
+              <button key={n}
+                onClick={() => {
+                  const cur = settings.delivery_weekdays || []
+                  const next = on ? cur.filter(x => x !== n) : [...cur, n].sort((a, b) => a - b)
+                  if (next.length === 0) return
+                  update({ delivery_weekdays: next })
+                }}
+                className={`flex-1 py-2 rounded-lg text-[11px] font-medium transition-colors ${on ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-input)] text-[var(--text-muted)]'}`}>
+                {label}
+              </button>
+            )
+          })}
         </div>
       </div>
 

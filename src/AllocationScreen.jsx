@@ -169,12 +169,22 @@ export default function AllocationScreen() {
             </div>
             <div className="flex items-center gap-2 mt-2">
               <label className="text-[var(--text-muted)] text-xs">Approve qty:</label>
-              <input
-                type="number"
-                value={getQty(row)}
-                onChange={e => setQty(row, e.target.value)}
-                className="bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-1.5 text-sm w-20 outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              />
+              <div className="flex items-center gap-1">
+                <button onClick={() => setQty(row, Math.max(0, (Number(getQty(row)) || 0) - 1))}
+                  className="w-8 h-8 rounded-lg bg-[var(--bg-input)] text-[var(--text-primary)] text-lg leading-none flex items-center justify-center hover:bg-[var(--bg-hover)] transition-colors">−</button>
+                <input
+                  type="number" min="0"
+                  value={getQty(row)}
+                  onChange={e => setQty(row, e.target.value)}
+                  className={`bg-[var(--bg-input)] rounded-lg px-2 py-1.5 text-sm w-14 text-center outline-none focus:ring-2 focus:ring-[var(--accent)] ${Number(getQty(row)) === 0 ? 'text-[var(--text-muted2)] line-through' : 'text-[var(--text-primary)]'}`}
+                />
+                <button onClick={() => setQty(row, (Number(getQty(row)) || 0) + 1)}
+                  className="w-8 h-8 rounded-lg bg-[var(--bg-input)] text-[var(--text-primary)] text-lg leading-none flex items-center justify-center hover:bg-[var(--bg-hover)] transition-colors">+</button>
+                {Number(getQty(row)) !== 0 && (
+                  <button onClick={() => setQty(row, 0)}
+                    className="ml-1 text-[var(--text-muted2)] hover:text-red-400 text-[11px] px-1.5 py-1 rounded transition-colors">skip</button>
+                )}
+              </div>
               <span className="text-[var(--text-faint)] text-xs ml-auto">
                 rate {row.avg_daily_rate}/d · CR {row.criticalRatio}% · z {row.z}
               </span>

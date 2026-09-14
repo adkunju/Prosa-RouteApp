@@ -5,6 +5,7 @@ const DEFAULTS = {
   delivery_days_per_week: 6,
   daily_budget_min: 360,
   allow_early_visit_days: 1,
+  delivery_weekdays: [1, 2, 3, 4, 5, 6],
 }
 
 export function useSettings() {

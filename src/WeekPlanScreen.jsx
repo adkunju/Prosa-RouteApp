@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { supabase } from './supabaseClient'
 import { useSettings } from './useSettings'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
@@ -6,6 +6,13 @@ import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package } 
 
 const NUM_DAYS = 6
 const DAILY_BUDGET_MIN = 360 // 6 hours
+
+function dayLabel(iso, { short = false } = {}) {
+  const d = new Date(iso + 'T00:00:00')
+  const wd = d.toLocaleDateString('en-GB', { weekday: short ? 'short' : 'long' })
+  if (short) return `${wd} ${d.getDate()}`
+  return `${wd} ${d.getDate()} ${d.toLocaleDateString('en-GB', { month: 'short' })}`
+}
 
 function dateForOffset(offset) {
   const d = new Date()
@@ -33,7 +40,22 @@ export default function WeekPlanScreen() {
   const [dueStores, setDueStores] = useState([]) // [{store_id, name, service_minutes, due_date, bearing, skuReqs:[{sku_id,name,qty}]}]
   const [assignment, setAssignment] = useState({}) // storeId -> dayIndex
   const { settings, loaded: settingsLoaded } = useSettings()
-  const NUM_DAYS = settings.delivery_days_per_week
+  // Calendar dates for the next N delivery days, skipping weekdays that are
+  // switched off in settings.
+  const planDates = useMemo(() => {
+    const allowed = settings.delivery_weekdays || [1, 2, 3, 4, 5, 6]
+    const out = []
+    const d = new Date()
+    for (let i = 0; i < 60 && out.length < allowed.length; i++) {
+      const iso = d.toISOString().slice(0, 10)
+      const dow = d.getDay() === 0 ? 7 : d.getDay()
+      if (allowed.includes(dow)) out.push(iso)
+      d.setDate(d.getDate() + 1)
+    }
+    return out
+  }, [settings.delivery_weekdays])
+
+  const NUM_DAYS = planDates.length
   const DAILY_BUDGET_MIN = settings.daily_budget_min
   const [locked, setLocked] = useState({}) // storeId -> bool
   const [pickupDue, setPickupDue] = useState([])
@@ -142,7 +164,7 @@ export default function WeekPlanScreen() {
     setLoading(false)
   }
 
-  useEffect(() => { if (settingsLoaded) load() }, [settingsLoaded, NUM_DAYS, DAILY_BUDGET_MIN])
+  useEffect(() => { if (settingsLoaded) load() }, [settingsLoaded, NUM_DAYS, DAILY_BUDGET_MIN, planDates.join(',')])
 
   function moveStore(storeId, newDay) {
     setAssignment(a => ({ ...a, [storeId]: newDay }))
@@ -176,6 +198,46 @@ export default function WeekPlanScreen() {
     })
   }, [byDay, matrixMap, depotId])
 
+  const leg = (a, b) => (a === b ? 0 : (matrixMap[`${a}_${b}`] ?? matrixMap[`${b}_${a}`] ?? 600))
+
+  // Order each day depot -> ... -> depot by nearest neighbour, so that
+  // insertion positions below mean something.
+  const dayRoutes = useMemo(() => {
+    if (!depotId) return byDay.map(() => [])
+    return byDay.map(stops => {
+      const pool = [...stops]
+      const out = []
+      let cur = depotId
+      while (pool.length) {
+        let bi = 0
+        for (let i = 1; i < pool.length; i++) {
+          if (leg(cur, pool[i].store_id) < leg(cur, pool[bi].store_id)) bi = i
+        }
+        out.push(pool[bi]); cur = pool[bi].store_id; pool.splice(bi, 1)
+      }
+      return out
+    })
+  }, [byDay, matrixMap, depotId])
+
+  // Cost of adding a store to a day: travel from the nearest stop already on
+  // that day, plus the time spent in the store. Simple and always positive.
+  const moveImpact = useCallback((store) => {
+    if (!depotId) return []
+    const from = assignment[store.store_id] ?? 0
+    const svc = store.service_minutes || 15
+    return byDay.map((stops, d) => {
+      if (d === from) return { day: d, cost: 0, current: true }
+      const others = stops.filter(x => x.store_id !== store.store_id)
+      let nearest = leg(depotId, store.store_id)
+      others.forEach(o => {
+        const t = leg(o.store_id, store.store_id)
+        if (t < nearest) nearest = t
+      })
+      const late = (planDates[d] || dateForOffset(d)) > store.due_date
+      return { day: d, cost: Math.round(nearest / 60 + svc), current: false, late }
+    })
+  }, [byDay, matrixMap, depotId, assignment])
+
   async function saveWeekPlan() {
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
@@ -183,7 +245,7 @@ export default function WeekPlanScreen() {
     for (let day = 0; day < NUM_DAYS; day++) {
       const stops = byDay[day]
       if (stops.length === 0) continue
-      const planDate = dateForOffset(day)
+      const planDate = planDates[day] || dateForOffset(day)
 
       let planId
       const { data: existing } = await supabase.from('plans').select('id').eq('user_id', user.id).eq('plan_date', planDate).maybeSingle()
@@ -265,7 +327,7 @@ export default function WeekPlanScreen() {
             <div key={day}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[var(--text-primary)] text-sm font-semibold">
-                  Day {day + 1} — {dateForOffset(day)}
+                  {dayLabel(planDates[day] || dateForOffset(day))}
                 </span>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${overloaded ? 'bg-red-900/60 text-red-300' : 'bg-[var(--bg-input)] text-[var(--text-secondary)]'}`}>
                   {formatDuration(mins)} · {stops.length} stops
@@ -292,8 +354,10 @@ export default function WeekPlanScreen() {
                       disabled={locked[s.store_id]}
                       className="bg-[var(--bg-input)] text-[var(--text-primary)] text-xs rounded-lg px-2 py-1.5 outline-none disabled:opacity-40 shrink-0"
                     >
-                      {Array.from({ length: NUM_DAYS }).map((_, d) => (
-                        <option key={d} value={d}>Day {d + 1}</option>
+                      {moveImpact(s).map(({ day: d, cost, current, late }) => (
+                        <option key={d} value={d}>
+                          {dayLabel(planDates[d] || dateForOffset(d), { short: true })}{current ? '' : ` +${cost}m`}{late ? ' ⚠' : ''}
+                        </option>
                       ))}
                     </select>
                   </div>
