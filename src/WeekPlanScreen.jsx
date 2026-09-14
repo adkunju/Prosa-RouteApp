@@ -263,64 +263,79 @@ export default function WeekPlanScreen() {
     })
   }, [byDay, matrixMap, depotId, assignment])
 
+  // Batched: a handful of round trips regardless of store count. The previous
+  // version issued one select plus one write per stop and per SKU, which grew
+  // linearly and took ~15s.
   async function saveWeekPlan() {
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
 
-    for (let day = 0; day < NUM_DAYS; day++) {
-      const stops = byDay[day]
-      const planDate = planDates[day] || dateForOffset(day)
+    const dates = []
+    for (let d = 0; d < NUM_DAYS; d++) dates.push(planDates[d] || dateForOffset(d))
 
-      let planId
-      const { data: existing } = await supabase.from('plans').select('id').eq('user_id', user.id).eq('plan_date', planDate).maybeSingle()
-      if (existing) { planId = existing.id } else {
-        const { data: np } = await supabase.from('plans').insert({ user_id: user.id, plan_date: planDate, status: 'draft' }).select('id').single()
-        planId = np?.id
-      }
-      // Drop stops that are no longer assigned to this day. A stop that already
-      // has delivery lines is history and is never removed.
-      const keep = new Set(stops.map(s => s.store_id))
-      const { data: current } = await supabase.from('plan_stops')
-        .select('id, store_id, delivery_lines(id)').eq('plan_id', planId)
-      for (const ps of current || []) {
-        if (keep.has(ps.store_id)) continue
-        if ((ps.delivery_lines || []).length > 0) continue
-        await supabase.from('requirements').delete().eq('plan_stop_id', ps.id)
-        await supabase.from('plan_stops').delete().eq('id', ps.id)
-      }
+    // 1. plans for every day at once
+    await supabase.from('plans')
+      .upsert(dates.map(plan_date => ({ user_id: user.id, plan_date, status: 'draft' })),
+              { onConflict: 'user_id,plan_date', ignoreDuplicates: true })
+    const { data: plans } = await supabase.from('plans')
+      .select('id, plan_date').eq('user_id', user.id).in('plan_date', dates)
+    const planIdByDate = {}
+    ;(plans || []).forEach(p => { planIdByDate[p.plan_date] = p.id })
+    const planIds = Object.values(planIdByDate)
 
-      if (stops.length === 0) continue
+    // 2. what already exists, and which stops are protected by real deliveries
+    const { data: existingStops } = await supabase.from('plan_stops')
+      .select('id, plan_id, store_id, delivery_lines(id)').in('plan_id', planIds)
 
-      const { count } = await supabase.from('plan_stops').select('id', { count: 'exact', head: true }).eq('plan_id', planId)
-      let stopOrder = (count || 0) + 1
+    const wanted = new Set()
+    dates.forEach((date, day) => {
+      (byDay[day] || []).forEach(s => wanted.add(`${planIdByDate[date]}_${s.store_id}`))
+    })
 
-      for (const s of stops) {
-        const { data: existingStop } = await supabase.from('plan_stops')
-          .select('id').eq('plan_id', planId).eq('store_id', s.store_id).maybeSingle()
+    const toDelete = (existingStops || [])
+      .filter(ps => !wanted.has(`${ps.plan_id}_${ps.store_id}`))
+      .filter(ps => (ps.delivery_lines || []).length === 0)
+      .map(ps => ps.id)
 
-        let stopId
-        if (existingStop) {
-          stopId = existingStop.id
-        } else {
-          const { data: stop } = await supabase.from('plan_stops').insert({ plan_id: planId, store_id: s.store_id, stop_order: stopOrder }).select('id').single()
-          stopOrder++
-          if (!stop) continue
-          stopId = stop.id
-        }
-
-        for (const req of s.skuReqs) {
-          const { data: existingReq } = await supabase.from('requirements')
-            .select('id').eq('plan_stop_id', stopId).eq('sku_id', req.sku_id).maybeSingle()
-          if (existingReq) {
-            await supabase.from('requirements').update({ proposed_qty: req.qty, approved_qty: req.qty }).eq('id', existingReq.id)
-          } else {
-            await supabase.from('requirements').insert({
-              plan_stop_id: stopId, sku_id: req.sku_id, proposed_qty: req.qty, approved_qty: req.qty, source: 'auto',
-            })
-          }
-        }
-      }
+    if (toDelete.length) {
+      await supabase.from('requirements').delete().in('plan_stop_id', toDelete)
+      await supabase.from('plan_stops').delete().in('id', toDelete)
     }
+
+    // 3. all stops in one write
+    const stopRows = []
+    dates.forEach((date, day) => {
+      const planId = planIdByDate[date]
+      if (!planId) return
+      ;(byDay[day] || []).forEach((s, idx) => {
+        stopRows.push({ plan_id: planId, store_id: s.store_id, stop_order: idx + 1, locked: !!locked[s.store_id] })
+      })
+    })
+    if (stopRows.length) {
+      await supabase.from('plan_stops').upsert(stopRows, { onConflict: 'plan_id,store_id' })
+    }
+
+    // 4. resolve ids, then all requirements in one write
+    const { data: savedStops } = await supabase.from('plan_stops')
+      .select('id, plan_id, store_id').in('plan_id', planIds)
+    const stopIdByKey = {}
+    ;(savedStops || []).forEach(ps => { stopIdByKey[`${ps.plan_id}_${ps.store_id}`] = ps.id })
+
+    const reqRows = []
+    dates.forEach((date, day) => {
+      const planId = planIdByDate[date]
+      ;(byDay[day] || []).forEach(s => {
+        const stopId = stopIdByKey[`${planId}_${s.store_id}`]
+        if (!stopId) return
+        s.skuReqs.forEach(r => {
+          reqRows.push({ plan_stop_id: stopId, sku_id: r.sku_id, proposed_qty: r.qty, approved_qty: r.qty, source: 'auto' })
+        })
+      })
+    })
+    if (reqRows.length) {
+      await supabase.from('requirements').upsert(reqRows, { onConflict: 'plan_stop_id,sku_id' })
+    }
+
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)

@@ -203,12 +203,16 @@ export default function DashboardScreen() {
           <>
             {Object.entries(stock.reduce((acc, b) => {
               const n = b.skus?.name || 'Unknown'
-              acc[n] = (acc[n] || 0) + b.available
+              if (!acc[n]) acc[n] = { available: 0, made: 0 }
+              acc[n].available += b.available
+              acc[n].made += b.qty
               return acc
             }, {})).map(([name, qty]) => (
               <div key={name} className="flex justify-between text-sm py-1">
                 <span className="text-[var(--text-secondary)]">{name}</span>
-                <span className="text-[var(--text-primary)] font-semibold">{qty} pcs</span>
+                <span className="text-[var(--text-primary)] font-semibold">
+                  {qty.available} <span className="text-[var(--text-muted2)] font-normal">/ {qty.made} pcs</span>
+                </span>
               </div>
             ))}
             <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40">
@@ -218,7 +222,7 @@ export default function DashboardScreen() {
                   <div key={b.id} className="flex justify-between text-xs py-0.5">
                     <span className="text-[var(--text-muted2)]">{b.skus?.name} · made {b.produced_on}</span>
                     <span className={days <= 1 ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted)]'}>
-                      {b.available} pcs · {days}d left
+                      {b.available}/{b.qty} pcs · {days}d left
                     </span>
                   </div>
                 )
