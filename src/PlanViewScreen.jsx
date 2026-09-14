@@ -166,7 +166,7 @@ export default function PlanViewScreen() {
 
     const { data } = await supabase
       .from('plan_stops')
-      .select('id, stop_order, store_id, locked, stores(id, name), requirements(id, sku_id, proposed_qty, approved_qty, skus(name, shelf_life_days))')
+      .select('id, stop_order, store_id, locked, stores(id, name), requirements(id, sku_id, proposed_qty, approved_qty, skus(name, shelf_life_days, min_delivery_qty))')
       .eq('plan_id', plan.id)
       .order('stop_order')
 
@@ -554,12 +554,19 @@ export default function PlanViewScreen() {
               <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1">
                 +{Math.round(legInfo[idx]?.legMinutes || 0)} min · {(legInfo[idx]?.legKm || 0).toFixed(1)} km from previous
               </div>
-              {stop.requirements?.map(req => (
-                <div key={req.id} className="text-[var(--text-muted)] text-xs flex justify-between pl-5">
-                  <span>{req.skus?.name}</span>
-                  <span className="text-[var(--text-secondary)]">{req.approved_qty ?? req.proposed_qty} pcs</span>
-                </div>
-              ))}
+              {stop.requirements?.map(req => {
+                const qty = req.approved_qty ?? req.proposed_qty
+                const moq = req.skus?.min_delivery_qty || 0
+                return (
+                  <div key={req.id} className="text-[var(--text-muted)] text-xs flex justify-between pl-5">
+                    <span>{req.skus?.name}</span>
+                    <span className="text-[var(--text-secondary)]">
+                      {qty} {qty === 1 ? 'pc' : 'pcs'}
+                      {moq > 0 && qty < moq && <span className="text-[var(--text-gold)]"> · MOQ {moq}</span>}
+                    </span>
+                  </div>
+                )
+              })}
               <div className="pl-5 mt-2">
                 {isDone ? (
                   <span className="flex items-center gap-1.5 text-[var(--accent)] text-xs">
