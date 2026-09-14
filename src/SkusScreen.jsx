@@ -6,7 +6,7 @@ export default function SkusScreen() {
   const [skus, setSkus] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [form, setForm] = useState({ name: '', unit: 'pcs', shelf_life_days: 6, unit_cost: '', unit_price: '' })
+  const [form, setForm] = useState({ name: '', unit: 'pcs', shelf_life_days: 6, unit_cost: '', unit_price: '', min_delivery_qty: 1 })
 
   async function loadSkus() {
     const { data } = await supabase.from('skus').select('*').eq('is_active', true).order('name')
@@ -26,6 +26,7 @@ export default function SkusScreen() {
       name: form.name,
       unit: form.unit,
       shelf_life_days: Number(form.shelf_life_days),
+      min_delivery_qty: Number(form.min_delivery_qty) || 1,
       unit_cost: form.unit_cost ? Number(form.unit_cost) : null,
       unit_price: form.unit_price ? Number(form.unit_price) : null,
     })
@@ -35,7 +36,7 @@ export default function SkusScreen() {
 
   function resetForm() {
     setShowForm(false)
-    setForm({ name: '', unit: 'pcs', shelf_life_days: 6, unit_cost: '', unit_price: '' })
+    setForm({ name: '', unit: 'pcs', shelf_life_days: 6, unit_cost: '', unit_price: '', min_delivery_qty: 1 })
   }
 
   return (
@@ -65,7 +66,7 @@ export default function SkusScreen() {
             <div>
               <div className="text-[var(--text-primary)] font-medium">{sku.name}</div>
               <div className="text-[var(--text-muted)] text-sm mt-0.5">
-                {sku.shelf_life_days} day shelf life · sold per {sku.unit}
+                {sku.shelf_life_days} day shelf life · sold per {sku.unit}{sku.min_delivery_qty > 1 ? ` · min ${sku.min_delivery_qty}/drop` : ''}
               </div>
               {(sku.unit_cost || sku.unit_price) && (
                 <div className="text-[var(--text-muted2)] text-xs mt-1">
@@ -111,6 +112,14 @@ export default function SkusScreen() {
                 <input
                   type="number"
                   value={form.shelf_life_days} onChange={e => setField('shelf_life_days', e.target.value)}
+                  className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-[var(--text-muted)] text-xs mb-1 block">Min per drop</label>
+                <input
+                  type="number" min="1"
+                  value={form.min_delivery_qty} onChange={e => setField('min_delivery_qty', e.target.value)}
                   className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]"
                 />
               </div>

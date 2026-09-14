@@ -193,6 +193,9 @@ export default function AllocationScreen() {
                 <div className="text-[var(--text-muted)] text-xs mt-0.5">
                   {row.sku_name}
                   {row.last_visit_date && <span className="text-[var(--text-faint)]"> · last {row.last_visit_date}</span>}
+                  {row.min_delivery_qty > 0 && row.proposed < row.min_delivery_qty && (
+                    <span className="text-[var(--text-gold)]"> · below MOQ {row.min_delivery_qty} pcs</span>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
