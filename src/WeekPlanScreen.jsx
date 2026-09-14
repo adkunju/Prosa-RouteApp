@@ -59,7 +59,9 @@ export default function WeekPlanScreen() {
   const DAILY_BUDGET_MIN = settings.daily_budget_min
   const [locked, setLocked] = useState({}) // storeId -> bool
   const [pickupDue, setPickupDue] = useState([])
+  const [unscheduled, setUnscheduled] = useState([])
   const [matrixMap, setMatrixMap] = useState({})
+  const [matrixMeters, setMatrixMeters] = useState({})
   const [depotId, setDepotId] = useState(null)
 
   async function load() {
@@ -69,12 +71,14 @@ export default function WeekPlanScreen() {
     const [{ data: forecast }, { data: stores }, { data: matrix }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*'),
       supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup').eq('is_active', true),
-      supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds'),
+      supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds, meters'),
     ])
 
     const depot = stores.find(s => s.is_depot)
     const matrixMap = {}
     matrix.forEach(m => { matrixMap[`${m.from_store_id}_${m.to_store_id}`] = m.seconds })
+    const metersMap = {}
+    matrix.forEach(m => { metersMap[`${m.from_store_id}_${m.to_store_id}`] = m.meters })
 
     // Filter to stores due within window, group by store
     const dueWindow = (forecast || []).filter(r => daysUntil(r.next_visit_due) <= NUM_DAYS)
@@ -116,6 +120,7 @@ export default function WeekPlanScreen() {
     const dayLists = Array.from({ length: NUM_DAYS }, () => [])
     const dayMins = Array(NUM_DAYS).fill(0)
     const assign = {}
+    const overflow = []
 
     function legSeconds(fromId, toId) {
       return matrixMap[`${fromId}_${toId}`] ?? matrixMap[`${toId}_${fromId}`] ?? 600 // fallback 10 min
@@ -143,22 +148,30 @@ export default function WeekPlanScreen() {
           break
         }
       }
+      // Not in the due window — try any other day, still inside the budget.
       if (!placed) {
-        // Nothing fits inside the budget: put it on the emptiest eligible day
-        // instead of stacking everything on one, so the overflow is spread and
-        // visible rather than hidden in a single impossible day.
-        let best = 0
-        for (let day = 1; day <= dueDay; day++) {
-          if (dayMins[day] < dayMins[best]) best = day
+        for (let day = 0; day < NUM_DAYS && !placed; day++) {
+          const list = dayLists[day]
+          const last = list.length ? list[list.length - 1] : depot.id
+          const prevReturn = list.length ? legSeconds(last, depot.id) : 0
+          const inc = (legSeconds(last, s.store_id) + legSeconds(s.store_id, depot.id) - prevReturn) / 60 + s.service_minutes
+          if (dayMins[day] + inc <= DAILY_BUDGET_MIN) {
+            dayLists[day].push(s.store_id)
+            dayMins[day] += inc
+            assign[s.store_id] = day
+            placed = true
+          }
         }
-        dayLists[best].push(s.store_id)
-        dayMins[best] += s.service_minutes + 20
-        assign[s.store_id] = best
       }
+      // Fits nowhere inside the working day: leave it unscheduled rather than
+      // pretending a day can absorb it.
+      if (!placed) overflow.push(s)
     })
 
     setMatrixMap(matrixMap)
+    setMatrixMeters(metersMap)
     setDepotId(depot.id)
+    setUnscheduled(overflow)
     setDueStores(stores_due)
     setAssignment(assign)
     setLoading(false)
@@ -185,6 +198,18 @@ export default function WeekPlanScreen() {
 
   // Recomputed on every change: route each day depot -> stops -> depot using
   // real matrix legs, plus service time at each stop.
+  const dayKm = useMemo(() => {
+    const m = (a, b) => (a === b ? 0 : (matrixMeters[`${a}_${b}`] ?? matrixMeters[`${b}_${a}`] ?? 5000))
+    return byDay.map(stops => {
+      if (!stops.length || !depotId) return 0
+      let meters = 0
+      let prev = depotId
+      stops.forEach(s => { meters += m(prev, s.store_id); prev = s.store_id })
+      meters += m(prev, depotId)
+      return Math.round(meters / 100) / 10
+    })
+  }, [byDay, matrixMeters, depotId])
+
   const dayMinutes = useMemo(() => {
     const leg = (a, b) => matrixMap[`${a}_${b}`] ?? matrixMap[`${b}_${a}`] ?? 600
     return byDay.map(stops => {
@@ -330,7 +355,7 @@ export default function WeekPlanScreen() {
                   {dayLabel(planDates[day] || dateForOffset(day))}
                 </span>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${overloaded ? 'bg-red-900/60 text-red-300' : 'bg-[var(--bg-input)] text-[var(--text-secondary)]'}`}>
-                  {formatDuration(mins)} · {stops.length} stops
+                  {formatDuration(mins)} · {dayKm[day] || 0} km · {stops.length} stops
                   {overloaded && <AlertTriangle size={11} className="inline ml-1" />}
                 </span>
               </div>
