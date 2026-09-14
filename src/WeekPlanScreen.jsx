@@ -20,8 +20,14 @@ function dateForOffset(offset) {
   return d.toISOString().slice(0, 10)
 }
 
+function localToday() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+}
 function daysUntil(dateStr) {
-  return Math.ceil((new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24))
+  const now = new Date(localToday() + 'T00:00:00')
+  const target = new Date(dateStr + 'T00:00:00')
+  return Math.round((target - now) / 86400000)
 }
 
 function formatDuration(mins) {
@@ -47,19 +53,24 @@ export default function WeekPlanScreen() {
     const out = []
     const d = new Date()
     for (let i = 0; i < 60 && out.length < allowed.length; i++) {
-      const iso = d.toISOString().slice(0, 10)
+      const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
       const dow = d.getDay() === 0 ? 7 : d.getDay()
       if (allowed.includes(dow)) out.push(iso)
       d.setDate(d.getDate() + 1)
     }
     return out
-  }, [settings.delivery_weekdays])
+  // Include today's date as a dep so the window shifts at midnight
+  // and on hard reload, rather than freezing at first render.
+  }, [settings.delivery_weekdays, localToday()])
 
   const NUM_DAYS = planDates.length
   const DAILY_BUDGET_MIN = settings.daily_budget_min
   const [locked, setLocked] = useState({}) // storeId -> bool
   const [pickupDue, setPickupDue] = useState([])
   const [unscheduled, setUnscheduled] = useState([])
+  const [showPickupDetail, setShowPickupDetail] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [stalePlans, setStalePlans] = useState([])
   const [matrixMap, setMatrixMap] = useState({})
   const [matrixMeters, setMatrixMeters] = useState({})
   const [depotId, setDepotId] = useState(null)
@@ -67,6 +78,14 @@ export default function WeekPlanScreen() {
   async function load() {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
+
+    const todayStr = new Date().toISOString().slice(0, 10)
+    const { data: existingPlans } = await supabase.from('plans')
+      .select('plan_date, plan_stops(store_id)')
+      .eq('user_id', user.id)
+      .gte('plan_date', planDates[0] || todayStr)
+      .lt('plan_date', todayStr)
+    setStalePlans(existingPlans || [])
 
     const [{ data: forecast }, { data: stores }, { data: matrix }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*'),
@@ -172,6 +191,14 @@ export default function WeekPlanScreen() {
     setMatrixMeters(metersMap)
     setDepotId(depot.id)
     setUnscheduled(overflow)
+    // Ignore saved assignments from before today — they're stale and would
+    // override the fresh computation with yesterday's plan.
+    const staleIds = new Set()
+    ;(existingPlans || []).filter(p => p.plan_date < todayStr).forEach(p => {
+      ;(p.plan_stops || []).forEach(ps => staleIds.add(ps.store_id))
+    })
+    stores_due.forEach(s => { if (staleIds.has(s.store_id)) delete assign[s.store_id] })
+
     setDueStores(stores_due)
     setAssignment(assign)
     setLoading(false)
@@ -266,6 +293,30 @@ export default function WeekPlanScreen() {
   // Batched: a handful of round trips regardless of store count. The previous
   // version issued one select plus one write per stop and per SKU, which grew
   // linearly and took ~15s.
+  async function resetPlan() {
+    setResetting(true)
+    setAssignment({})
+    setDueStores([])
+    const { data: { user } } = await supabase.auth.getUser()
+    const today = new Date().toISOString().slice(0, 10)
+    // Find all future plans
+    const { data: futurePlans } = await supabase.from('plans')
+      .select('id').eq('user_id', user.id).gte('plan_date', today)
+    if (futurePlans?.length) {
+      const ids = futurePlans.map(p => p.id)
+      // Only delete stops that have no delivery lines (don't touch history)
+      const { data: stops } = await supabase.from('plan_stops')
+        .select('id, delivery_lines(id)').in('plan_id', ids)
+      const deletable = (stops || []).filter(s => !s.delivery_lines?.length).map(s => s.id)
+      if (deletable.length) {
+        await supabase.from('requirements').delete().in('plan_stop_id', deletable)
+        await supabase.from('plan_stops').delete().in('id', deletable)
+      }
+    }
+    setResetting(false)
+    load() // recompute from scratch
+  }
+
   async function saveWeekPlan() {
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
@@ -347,7 +398,18 @@ export default function WeekPlanScreen() {
         <span className="text-[var(--text-muted)] text-sm flex items-center gap-1.5">
           <Calendar size={14} className="text-[var(--text-accent)]" /> {NUM_DAYS}-day plan
         </span>
-        <span className="text-[var(--text-muted2)] text-xs">Budget: {DAILY_BUDGET_MIN / 60}h/day</span>
+        <span className="text-[var(--text-muted2)] text-xs">Max {DAILY_BUDGET_MIN / 60}h/day per route</span>
+        {(() => {
+          const today = new Date().toISOString().slice(0, 10)
+          const weekStart = planDates[0] || today
+          const stale = stalePlans.some(p => p.plan_date >= weekStart && p.plan_date < today && p.plan_stops?.length > 0)
+          return (
+            <button onClick={resetPlan} disabled={resetting}
+              className={`text-xs disabled:opacity-50 transition-colors font-medium ${stale ? 'text-red-400 hover:text-red-300' : 'text-[var(--text-muted2)] hover:text-[var(--text-primary)]'}`}>
+              {resetting ? 'Resetting...' : stale ? '⚠ Reset & recompute' : 'Reset & recompute'}
+            </button>
+          )
+        })()}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-5">
@@ -355,21 +417,46 @@ export default function WeekPlanScreen() {
 
         {!loading && pickupDue.length > 0 && (
           <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--text-gold)]/30 rounded-2xl p-4">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between">
               <span className="text-[var(--text-primary)] text-sm font-medium flex items-center gap-2">
                 <Package size={14} className="text-[var(--text-gold)]" /> Collecting from depot
               </span>
-              <span className="text-[var(--text-muted2)] text-xs">{pickupDue.length} stores</span>
+              <button onClick={() => setShowPickupDetail(true)}
+                className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs transition-colors">
+                {pickupDue.length} stores ›
+              </button>
             </div>
-            <p className="text-[var(--text-muted2)] text-xs mb-3">Not route stops — box these up for collection.</p>
-            {pickupDue.map(s => (
-              <div key={s.store_id} className="flex items-start justify-between py-1.5 border-t border-[var(--bg-input)]/40">
-                <span className="text-[var(--text-secondary)] text-xs">{s.name}</span>
-                <span className="text-[var(--text-muted)] text-xs text-right shrink-0 ml-3">
-                  {s.skuReqs.map(r => `${r.name}: ${r.qty}`).join(' · ')}
-                </span>
+            <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40">
+              {Object.entries(pickupDue.reduce((acc, s) => {
+                s.skuReqs.forEach(r => { acc[r.name] = (acc[r.name] || 0) + r.qty })
+                return acc
+              }, {})).map(([name, qty]) => (
+                <div key={name} className="flex justify-between text-xs py-0.5">
+                  <span className="text-[var(--text-muted2)]">{name}</span>
+                  <span className="text-[var(--text-secondary)] font-medium">{qty} pcs</span>
+                </div>
+              ))}
+            </div>
+            {showPickupDetail && (
+              <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col"
+                onClick={() => setShowPickupDetail(false)}>
+                <div onClick={e => e.stopPropagation()}
+                  className="m-4 mt-16 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[70vh] overflow-y-auto shadow-2xl">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-[var(--text-primary)] text-sm font-semibold">Collecting from depot</span>
+                    <button onClick={() => setShowPickupDetail(false)} className="text-[var(--text-muted)]">✕</button>
+                  </div>
+                  {pickupDue.map(s => (
+                    <div key={s.store_id} className="py-2 border-t border-[var(--bg-input)]/40">
+                      <div className="text-[var(--text-secondary)] text-sm">{s.name}</div>
+                      <div className="text-[var(--text-muted2)] text-xs mt-0.5">
+                        {s.skuReqs.map(r => `${r.name}: ${r.qty} pcs`).join(' · ')}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
+            )}
           </div>
         )}
         {!loading && Array.from({ length: NUM_DAYS }).map((_, day) => {

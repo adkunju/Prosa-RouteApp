@@ -268,6 +268,37 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
   )
 }
 
+
+function MapsCard({ links }) {
+  const [open, setOpen] = useState(false)
+  if (links.length === 1) {
+    return (
+      <a href={links[0].url} target="_blank" rel="noopener noreferrer"
+        className="flex items-center justify-center gap-2 bg-[var(--bg-card)] hover:bg-[var(--bg-input)] text-[var(--text-accent)] text-xs font-medium rounded-lg py-2 transition-colors w-full">
+        <Navigation size={13} /> Open in Google Maps
+      </a>
+    )
+  }
+  return (
+    <div>
+      <button onClick={() => setOpen(v => !v)}
+        className="flex items-center justify-center gap-2 bg-[var(--bg-card)] hover:bg-[var(--bg-input)] text-[var(--text-accent)] text-xs font-medium rounded-lg py-2 transition-colors w-full">
+        <Navigation size={13} /> Open in Google Maps · {links.length} legs {open ? '▲' : '▼'}
+      </button>
+      {open && (
+        <div className="flex flex-col gap-1.5 mt-1.5">
+          {links.map((link, i) => (
+            <a key={i} href={link.url} target="_blank" rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 bg-[var(--bg-card)]/70 hover:bg-[var(--bg-input)] text-[var(--text-secondary)] text-xs rounded-lg py-2 transition-colors">
+              <Navigation size={12} /> {link.label}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function PlanViewScreen() {
   const [dates, setDates] = useState([])
   const [selectedDate, setSelectedDate] = useState(today())
@@ -297,8 +328,23 @@ export default function PlanViewScreen() {
   const [batches, setBatches] = useState([])
 
   async function loadDates() {
-    const { data } = await supabase.from('plans').select('plan_date').order('plan_date', { ascending: false }).limit(30)
-    setDates([...new Set((data || []).map(d => d.plan_date))])
+    // Only plans that have stops, sorted oldest-first so the dropdown reads
+    // chronologically. Auto-select the nearest upcoming (or most recent) date.
+    const { data } = await supabase
+      .from('plans')
+      .select('plan_date, plan_stops(id)')
+      .gte('plan_date', new Date().toISOString().slice(0, 10))
+      .order('plan_date', { ascending: true })
+      .limit(14)
+    const withStops = [...new Set(
+      (data || []).filter(d => d.plan_stops?.length > 0).map(d => d.plan_date)
+    )]
+    setDates(withStops)
+    if (withStops.length > 0) {
+      const today = new Date().toISOString().slice(0, 10)
+      const upcoming = withStops.find(d => d >= today) || withStops[withStops.length - 1]
+      setSelectedDate(upcoming)
+    }
   }
 
   async function loadBatches() {
@@ -645,39 +691,33 @@ export default function PlanViewScreen() {
 
       {stops.length > 0 && (
         <>
-          <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center gap-2 shrink-0">
-            <button onClick={() => optimize('seconds')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition-colors ${metric === 'seconds' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
-              <Zap size={13} /> Fastest
-            </button>
-            <button onClick={() => optimize('meters')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium transition-colors ${metric === 'meters' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
-              <Gauge size={13} /> Shortest
-            </button>
-          </div>
-          <div className="px-4 py-2 bg-[var(--bg-root)] border-b border-[var(--bg-card)] flex items-center justify-between text-xs text-[var(--text-muted)] shrink-0">
-            <span>{Math.round(totalSeconds / 60)} min drive · {(totalMeters / 1000).toFixed(1)} km · {completedCount}/{orderedStops.length} done</span>
-            <div className="flex items-center gap-3">
-
-              <button onClick={() => setAddStopOpen(true)}
-                className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)]">
-                + Add visit
+          <div className="px-4 py-2 bg-[var(--bg-root)] border-b border-[var(--bg-card)] shrink-0">
+            <div className="flex items-center justify-between text-xs text-[var(--text-muted)] mb-2">
+              <span>{Math.round(totalSeconds / 60)} min drive · {(totalMeters / 1000).toFixed(1)} km · {completedCount}/{orderedStops.length} done</span>
+              <div className="flex items-center gap-3">
+                <button onClick={() => setAddStopOpen(true)}
+                  className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)]">
+                  + Add visit
+                </button>
+                <button onClick={saveOrder} disabled={saving} className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)] disabled:opacity-50">
+                  {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <span className="text-[var(--accent)]">Saved!</span> : <><Save size={13} /> Save order</>}
+                </button>
+              </div>
+            </div>
+            <div className="flex gap-2 mb-2">
+              <button onClick={() => optimize('seconds')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${metric === 'seconds' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
+                <Zap size={12} /> Fastest {metric === 'seconds' ? `· ${Math.round(totalSeconds/60)}m` : ''}
               </button>
-              <button onClick={saveOrder} disabled={saving} className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)] disabled:opacity-50">
-                {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <span className="text-[var(--accent)]">Saved!</span> : <><Save size={13} /> Save order</>}
+              <button onClick={() => optimize('meters')}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${metric === 'meters' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
+                <Gauge size={12} /> Shortest {metric === 'meters' ? `· ${(totalMeters/1000).toFixed(1)}km` : ''}
               </button>
             </div>
+            {mapsLinks.length > 0 && (
+              <MapsCard links={mapsLinks} />
+            )}
           </div>
-          {mapsLinks.length > 0 && (
-            <div className="px-4 py-3 border-b border-[var(--bg-input)] flex flex-col gap-2 shrink-0">
-              {mapsLinks.map((link, i) => (
-                <a key={i} href={link.url} target="_blank" rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium rounded-lg py-2.5 transition-colors">
-                  <Navigation size={15} /> {link.label}
-                </a>
-              ))}
-            </div>
-          )}
         </>
       )}
 

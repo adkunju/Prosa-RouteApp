@@ -334,7 +334,7 @@ export default function AllocationScreen() {
               .map(([sku_name, qty]) => ({ sku_name, qty }))
             if (totals.length === 0) return
             sessionStorage.setItem('prosa_production_prefill', JSON.stringify({ date: planDate, totals }))
-            window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { tab: 'production' } }))
+            window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { tab: 'settings_production' } }))
           }}
           disabled={Object.values(totalsBySku).every(q => !Number(q))}
           className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors"
