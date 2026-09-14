@@ -47,6 +47,11 @@ export default function AllocationScreen() {
     setQtys(q => ({ ...q, [key]: val }))
   }
 
+  const proposedBySku = dueRows.reduce((acc, row) => {
+    acc[row.sku_name] = (acc[row.sku_name] || 0) + (Number(row.proposed) || 0)
+    return acc
+  }, {})
+
   const totalsBySku = dueRows.reduce((acc, row) => {
     const qty = Number(getQty(row)) || 0
     acc[row.sku_name] = (acc[row.sku_name] || 0) + qty
@@ -137,14 +142,39 @@ export default function AllocationScreen() {
 
       <div className="px-4 py-3 bg-[var(--bg-card)]/60 border-b border-[var(--bg-input)] shrink-0">
         <div className="text-xs text-[var(--text-muted)] mb-1">Today's production target</div>
-        <div className="flex flex-wrap gap-3">
-          {Object.entries(totalsBySku).length === 0 && <span className="text-[var(--text-muted2)] text-sm">No stores due</span>}
-          {Object.entries(totalsBySku).map(([sku, qty]) => (
-            <div key={sku} className="text-[var(--text-primary)] text-sm font-semibold">
-              {sku}: <span className="text-[var(--text-accent)]">{qty} pcs</span>
-            </div>
-          ))}
-        </div>
+        {Object.entries(totalsBySku).length === 0 ? (
+          <span className="text-[var(--text-muted2)] text-sm">No stores due</span>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-[var(--text-muted2)]">
+                <th className="text-left font-normal pb-1">Product</th>
+                <th className="text-right font-normal pb-1">Proposed</th>
+                <th className="text-right font-normal pb-1">Approved</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(totalsBySku).map(([sku, qty]) => {
+                const prop = proposedBySku[sku] || 0
+                const diff = qty - prop
+                return (
+                  <tr key={sku} className="border-t border-[var(--bg-input)]/40">
+                    <td className="text-[var(--text-secondary)] py-1.5">{sku}</td>
+                    <td className="text-right text-[var(--text-muted)] py-1.5">{prop}</td>
+                    <td className="text-right py-1.5">
+                      <span className="text-[var(--text-accent)] font-semibold">{qty}</span>
+                      {diff !== 0 && (
+                        <span className={`ml-1 ${diff > 0 ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted2)]'}`}>
+                          ({diff > 0 ? '+' : ''}{diff})
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
@@ -156,11 +186,14 @@ export default function AllocationScreen() {
           </div>
         )}
         {dueRows.map(row => (
-          <div key={`${row.store_id}-${row.sku_id}`} className="bg-[var(--bg-card)] rounded-xl p-4">
-            <div className="flex items-start justify-between mb-2">
+          <div key={`${row.store_id}-${row.sku_id}`} className="bg-[var(--bg-card)] rounded-xl p-3">
+            <div className="flex items-start justify-between mb-1.5">
               <div className="min-w-0 flex-1">
                 <div className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</div>
-                <div className="text-[var(--text-muted)] text-xs mt-0.5">{row.sku_name}</div>
+                <div className="text-[var(--text-muted)] text-xs mt-0.5">
+                  {row.sku_name}
+                  {row.last_visit_date && <span className="text-[var(--text-faint)]"> · last {row.last_visit_date}</span>}
+                </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <span className="text-[var(--text-muted2)] text-xs">proposed</span>
@@ -185,9 +218,7 @@ export default function AllocationScreen() {
                     className="ml-1 text-[var(--text-muted2)] hover:text-red-400 text-[11px] px-1.5 py-1 rounded transition-colors">skip</button>
                 )}
               </div>
-              <span className="text-[var(--text-faint)] text-xs ml-auto">
-                rate {row.avg_daily_rate}/d · CR {row.criticalRatio}% · z {row.z}
-              </span>
+
             </div>
           </div>
         ))}
