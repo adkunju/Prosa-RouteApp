@@ -105,29 +105,165 @@ function buildMapsLinks(depot, orderedStoreObjs) {
 }
 
 
+
+function MarkVisitedForm({ stop, onDone }) {
+  const [open, setOpen] = useState(false)
+  const [remark, setRemark] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  if (!open) return (
+    <button onClick={() => setOpen(true)}
+      className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-muted)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
+      ✓ Mark visited
+    </button>
+  )
+
+  return (
+    <div className="mt-1 flex flex-col gap-1.5">
+      <input value={remark} onChange={e => setRemark(e.target.value)}
+        placeholder="Remark (optional)"
+        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+      <div className="flex gap-2">
+        <button onClick={async () => {
+          setSaving(true)
+          await supabase.from('plan_stops').update({
+            visited_at: new Date().toISOString(),
+            visit_remark: remark || null,
+          }).eq('id', stop.id)
+          setSaving(false)
+          onDone()
+        }} disabled={saving}
+          className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
+          {saving ? 'Saving...' : 'Confirm visit'}
+        </button>
+        <button onClick={() => setOpen(false)}
+          className="text-[var(--text-muted2)] text-xs px-2">Cancel</button>
+      </div>
+    </div>
+  )
+}
+
 function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
   const [q, setQ] = useState('')
   const [all, setAll] = useState([])
-  useEffect(() => {
-    supabase.from('stores').select('id,name').eq('is_active', true).eq('is_depot', false).order('name')
-      .then(({ data }) => setAll(data || []))
-  }, [])
+  const [forecast, setForecast] = useState({})
+  const [matrix, setMatrix] = useState({})
+  const [depot, setDepot] = useState(null)
+  const [preview, setPreview] = useState(null) // store to confirm
+  const [adding, setAdding] = useState(false)
+
+  useEffect(() => { (async () => {
+    const [{ data: st }, { data: fc }, { data: mx }, { data: dep }] = await Promise.all([
+      supabase.from('stores').select('id,name').eq('is_active',true).eq('is_depot',false).eq('exclude_from_forecast',false).order('name'),
+      supabase.from('store_sales_summary').select('store_id,visit_count,revenue,last_visit,days_since_visit'),
+      supabase.from('travel_matrix').select('from_store_id,to_store_id,seconds'),
+      supabase.from('stores').select('id').eq('is_depot',true).maybeSingle(),
+    ])
+    const fcMap = {}
+    ;(fc||[]).forEach(r => { fcMap[r.store_id] = r })
+    const mxMap = {}
+    ;(mx||[]).forEach(r => { mxMap[`${r.from_store_id}_${r.to_store_id}`] = r.seconds })
+    setAll(st||[])
+    setForecast(fcMap)
+    setMatrix(mxMap)
+    setDepot(dep)
+  })() }, [])
+
+  const todayIds = new Set(stops.map(s => s.store_id))
+  const leg = (a, b) => a === b ? 0 : (matrix[`${a}_${b}`] ?? matrix[`${b}_${a}`] ?? 99999)
+
+  function getBestPos(storeId) {
+    const seq = [depot?.id, ...stops.map(s => s.store_id), depot?.id].filter(Boolean)
+    let best = stops.length, bestCost = Infinity
+    for (let i = 0; i < seq.length - 1; i++) {
+      const cost = leg(seq[i], storeId) + leg(storeId, seq[i+1]) - leg(seq[i], seq[i+1])
+      if (cost < bestCost) { bestCost = cost; best = i }
+    }
+    return { pos: best, addedMin: Math.round(Math.max(0, bestCost) / 60) }
+  }
+
+  const notToday = all
+    .filter(s => !todayIds.has(s.id))
+    .sort((a, b) => {
+      const da = forecast[a.id]?.days_since_visit ?? 9999
+      const db = forecast[b.id]?.days_since_visit ?? 9999
+      return db - da
+    })
   const matches = q.length > 1
-    ? all.filter(s => s.name.toLowerCase().includes(q.toLowerCase())).slice(0, 8)
-    : []
+    ? notToday.filter(s => s.name.toLowerCase().includes(q.toLowerCase())).slice(0,8)
+    : notToday.slice(0,10)
+
+  async function confirmAdd() {
+    if (!preview || adding) return
+    setAdding(true)
+    const { pos } = getBestPos(preview.id)
+    const insertOrder = pos + 1
+    // Shift existing stops up to make room
+    const toShift = stops.filter(s => s.stop_order >= insertOrder).sort((a,b) => b.stop_order - a.stop_order)
+    for (const s of toShift) {
+      await supabase.from('plan_stops').update({ stop_order: s.stop_order + 1 }).eq('id', s.id)
+    }
+    await supabase.from('plan_stops').insert({ plan_id: planId, store_id: preview.id, stop_order: insertOrder })
+    setAdding(false)
+    onAdded()
+  }
+
+  if (preview) {
+    const fc = forecast[preview.id]
+    const { pos, addedMin } = getBestPos(preview.id)
+    const afterStop = stops[pos - 1]?.stores?.name || 'Depot'
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="bg-[var(--bg-card)]/80 border border-[var(--accent)]/30 rounded-xl p-4">
+          <div className="text-[var(--text-primary)] text-sm font-semibold mb-1">{preview.name}</div>
+          <div className="text-[var(--text-muted2)] text-xs mb-2">
+            Inserts after <span className="text-[var(--text-secondary)]">{afterStop}</span> · adds ~{addedMin} min
+          </div>
+          {fc && fc.visit_count > 0 ? (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="bg-[var(--bg-input)]/50 rounded-lg p-2">
+                <div className="text-[var(--text-muted2)]">Last delivery</div>
+                <div className="text-[var(--text-secondary)]">{fc.days_since_visit}d ago</div>
+              </div>
+              <div className="bg-[var(--bg-input)]/50 rounded-lg p-2">
+                <div className="text-[var(--text-muted2)]">Total revenue</div>
+                <div className="text-[var(--text-secondary)]">₹{Number(fc.revenue).toLocaleString('en-IN',{maximumFractionDigits:0})}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-[var(--text-gold)] text-xs">No delivery history — new store</div>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setPreview(null)}
+            className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-sm px-3 py-2">Back</button>
+          <button onClick={confirmAdd} disabled={adding}
+            className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-sm font-semibold rounded-xl py-2.5 transition-colors">
+            {adding ? 'Adding...' : 'Add to route'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
-      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search store..."
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search or browse..."
         className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-2" />
-      {matches.map(s => (
-        <button key={s.id} onClick={async () => {
-          const maxStop = stops.length + 1
-          await supabase.from('plan_stops').insert({ plan_id: planId, store_id: s.id, stop_order: maxStop })
-          onAdded()
-        }} className="w-full text-left bg-[var(--bg-card)]/70 hover:bg-[var(--bg-input)]/60 rounded-xl px-4 py-3 mb-1.5 text-[var(--text-secondary)] text-sm transition-colors">
-          {s.name}
-        </button>
-      ))}
+      {!q && <p className="text-[var(--text-muted2)] text-xs mb-2">Stores not on today's route</p>}
+      {matches.map(s => {
+        const fc = forecast[s.id]
+        return (
+          <button key={s.id} onClick={() => setPreview(s)}
+            className="w-full text-left bg-[var(--bg-card)]/70 hover:bg-[var(--bg-input)]/60 rounded-xl px-4 py-3 mb-1.5 transition-colors">
+            <div className="text-[var(--text-secondary)] text-sm">{s.name}</div>
+            {fc && fc.visit_count > 0
+              ? <div className="text-[var(--text-muted2)] text-xs mt-0.5">{fc.days_since_visit}d since last delivery · ₹{Number(fc.revenue).toLocaleString('en-IN',{maximumFractionDigits:0})} total</div>
+              : <div className="text-[var(--text-gold)] text-xs mt-0.5">No delivery history</div>
+            }
+          </button>
+        )
+      })}
     </>
   )
 }
@@ -522,13 +658,10 @@ export default function PlanViewScreen() {
           <div className="px-4 py-2 bg-[var(--bg-root)] border-b border-[var(--bg-card)] flex items-center justify-between text-xs text-[var(--text-muted)] shrink-0">
             <span>{Math.round(totalSeconds / 60)} min drive · {(totalMeters / 1000).toFixed(1)} km · {completedCount}/{orderedStops.length} done</span>
             <div className="flex items-center gap-3">
-              <button onClick={() => setQuickOpen(true)}
-                className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)]">
-                + Off-plan stop
-              </button>
+
               <button onClick={() => setAddStopOpen(true)}
                 className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)]">
-                + Add stop
+                + Add visit
               </button>
               <button onClick={saveOrder} disabled={saving} className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)] disabled:opacity-50">
                 {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <span className="text-[var(--accent)]">Saved!</span> : <><Save size={13} /> Save order</>}
@@ -613,10 +746,7 @@ export default function PlanViewScreen() {
                   </span>
                 ) : (
                   (!stop.requirements || stop.requirements.length === 0) ? (
-                    <button onClick={() => setCompletedStopIds(s => new Set([...s, stop.id]))}
-                      className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-muted)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
-                      ✓ Mark visited
-                    </button>
+                    <MarkVisitedForm stop={stop} onDone={() => setCompletedStopIds(s => new Set([...s, stop.id]))} />
                   ) : (
                     <button onClick={() => openCompleteForm(stop)}
                       className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-accent)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
