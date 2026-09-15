@@ -16,7 +16,7 @@ function GrowthBadge({ g }) {
   return <span className="text-[var(--text-muted2)] text-xs">{pct(g)}</span>
 }
 
-function StoreCard({ s, phones, onChanged }) {
+function StoreCard({ s, phones, onChanged, position }) {
   const dormant = s.days_since_visit > 14
   return (
     <div className={`bg-[var(--bg-card)]/60 backdrop-blur-xl border rounded-2xl p-4 ${dormant ? 'border-[var(--text-gold)]/30' : 'border-[var(--bg-input)]/40'}`}>
@@ -33,7 +33,15 @@ function StoreCard({ s, phones, onChanged }) {
           <div className="text-[var(--text-muted2)] text-xs mt-0.5">
             {s.visit_count} deliveries ·
             {s.last_visit ? ` last ${s.days_since_visit}d ago` : ' never delivered'}
-            {position && s._coords ? ` · ${haversineKm(position.lat, position.lng, s._coords.lat, s._coords.lng).toFixed(1)} km 📍` : ''}
+            {position && s._coords && (
+              <span className="text-[var(--text-muted2)]">
+                {' · '}{haversineKm(position.lat, position.lng, s._coords.lat, s._coords.lng).toFixed(1)} km from here
+                <a href={`https://www.google.com/maps/search/?api=1&query=${s._coords.lat},${s._coords.lng}`}
+                  target="_blank" rel="noopener noreferrer"
+                  onClick={e => e.stopPropagation()}
+                  className="ml-1 text-[var(--accent)] hover:underline">📍</a>
+              </span>
+            )}
 
           </div>
         </div>
@@ -178,7 +186,7 @@ export default function SalesScreen() {
             <p>No stores in this view</p>
           </div>
         )}
-        {rows.map(s => <StoreCard key={s.store_id} s={s} phones={phones} onChanged={() => setReloadKey(k => k + 1)} />)}
+        {rows.map(s => <StoreCard key={s.store_id} s={s} phones={phones} onChanged={() => setReloadKey(k => k + 1)} position={position} />)}
       </div>
       {showSalesPopup && <SalesPopup onClose={() => setShowSalesPopup(false)} stores={data} />}
       {showExpiryPopup && <ExpiryPopup onClose={() => setShowExpiryPopup(false)} stores={data} />}
