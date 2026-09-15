@@ -147,6 +147,15 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
           </>
         )}
 
+        {store && (
+          <div className="mb-3">
+            <label className="text-[var(--text-muted)] text-xs mb-1 block">Remark / visit note</label>
+            <textarea value={remark} onChange={e => setRemark(e.target.value)}
+              placeholder="Optional — what happened at this visit?"
+              rows={2}
+              className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] resize-none" />
+          </div>
+        )}
         {store && skus.map(sk => {
           const l = lines[sk.id] || {}
           const avail = batchesFor(sk.id)
@@ -209,10 +218,6 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
         <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-[var(--bg-input)]/60 shrink-0 flex gap-2 bg-[var(--bg-root)]/80 backdrop-blur-xl">
           <button onClick={() => { setStore(null); setQuery('') }}
             className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-sm px-3">Change store</button>
-          <textarea value={remark} onChange={e => setRemark(e.target.value)}
-            placeholder="Remark or visit note (optional)"
-            rows={1}
-            className="flex-1 bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-[var(--accent)] resize-none mr-2" />
           <div className="flex flex-col justify-center shrink-0 mr-1">
             <span className="text-[var(--text-muted2)] text-[10px] leading-tight">Invoice</span>
             <span className="text-[var(--text-primary)] font-semibold text-sm leading-tight">
@@ -225,7 +230,11 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
           </div>
           <button onClick={save} disabled={saving || !anything}
             className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors">
-            {saving ? <Loader2 size={16} className="animate-spin" /> : 'Record delivery'}
+            {saving ? <Loader2 size={16} className="animate-spin" /> : (
+                Object.values(lines).some(l => Number(l?.qty) > 0)
+                  ? 'Record delivery'
+                  : 'Record visit'
+              )}
           </button>
         </div>
       )}

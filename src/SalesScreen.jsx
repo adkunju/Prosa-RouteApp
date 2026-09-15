@@ -25,8 +25,8 @@ function StoreCard({ s, phones }) {
             <span className="text-[var(--text-primary)] text-sm font-medium truncate">{s.name}</span>
             {s.is_pickup && <span className="text-[var(--text-muted2)] text-[10px] shrink-0">pickup</span>}
             <PipelineTag storeId={s.store_id}
-              status={s.stores?.pipeline_status || 'prospect'}
-              updatedBy={s.stores?.pipeline_updated_by} size="xs"
+              status={s.pipeline_status || 'prospect'}
+              updatedBy={s.pipeline_updated_by} size="xs"
               onChanged={() => {}} />
           </div>
           <div className="text-[var(--text-muted2)] text-xs mt-0.5">
@@ -34,7 +34,7 @@ function StoreCard({ s, phones }) {
             {s.last_visit
               ? ` last ${s.days_since_visit}d ago`
               : ' never delivered'}
-            {dormant && <span className="text-[var(--text-gold)]"> · dormant</span>}
+
           </div>
         </div>
         <ContactButtons phone={phones[s.store_id]} size={13} />
@@ -67,18 +67,20 @@ function StoreCard({ s, phones }) {
   )
 }
 
-const TABS = ['Top', 'Attention', 'New', 'All']
+const PIPELINE_OPTS = ['all','prospect','onboard','warm','cold','dormant','dropped']
 
 export default function SalesScreen() {
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState('Top')
+  const [pipeline, setPipeline] = useState('all')
+  const [showSalesPopup, setShowSalesPopup] = useState(false)
+  const [showExpiryPopup, setShowExpiryPopup] = useState(false)
   const phones = useStoreContacts()
 
   useEffect(() => { (async () => {
     const { data: rows } = await supabase
       .from('store_sales_summary')
-      .select('*, stores(pipeline_status, pipeline_updated_by)')
+      .select('*')
       .eq('user_id', (await supabase.auth.getUser()).data.user.id)
       .order('revenue', { ascending: false })
     setData(rows || [])
@@ -98,10 +100,17 @@ export default function SalesScreen() {
 
   const fresh = data.filter(s => s.visit_count === 0 || s.visit_count <= 3)
 
-  const views = { Top: top, Attention: attention, New: fresh, All: data }
-  const rows = views[tab] || []
+  const pipelineCounts = data.reduce((acc, s) => {
+    const st = s.pipeline_status || 'prospect'
+    acc[st] = (acc[st] || 0) + 1
+    return acc
+  }, {})
 
+  const rows = pipeline === 'all' ? data : data.filter(s => s.pipeline_status === pipeline)
+
+  const thisMonth = new Date().toISOString().slice(0, 7)
   const totalRevenue = data.reduce((n, s) => n + Number(s.revenue), 0)
+  const monthRevenue = data.reduce((n, s) => n + Number(s.revenue_30d), 0)
   const totalWaste = data.reduce((n, s) => n + Number(s.waste_value), 0)
   const wasteRate = totalRevenue > 0 ? (totalWaste / (totalRevenue + totalWaste) * 100).toFixed(1) : 0
 
@@ -111,28 +120,29 @@ export default function SalesScreen() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="px-4 pt-4 pb-2 shrink-0">
         <div className="grid grid-cols-3 gap-2 mb-4">
-          <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-3">
-            <div className="text-[var(--text-muted2)] text-[10px] mb-1">Total revenue</div>
-            <div className="text-[var(--text-primary)] text-base font-bold">{fmt(totalRevenue)}</div>
-          </div>
-          <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-3">
-            <div className="text-[var(--text-muted2)] text-[10px] mb-1">Waste</div>
+          <button onClick={() => setShowSalesPopup(true)}
+            className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-3 text-left hover:border-[var(--accent)]/40 transition-colors">
+            <div className="text-[var(--text-muted2)] text-[10px] mb-1">Sales this month</div>
+            <div className="text-[var(--text-primary)] text-base font-bold">{fmt(monthRevenue)}</div>
+          </button>
+          <button onClick={() => setShowExpiryPopup(true)}
+            className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-3 text-left hover:border-[var(--accent)]/40 transition-colors">
+            <div className="text-[var(--text-muted2)] text-[10px] mb-1">Expiry this month</div>
             <div className={`text-base font-bold ${Number(wasteRate) > 15 ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>{wasteRate}%</div>
-          </div>
+          </button>
           <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-3">
             <div className="text-[var(--text-muted2)] text-[10px] mb-1">Attention</div>
             <div className={`text-base font-bold ${attention.length > 0 ? 'text-[var(--text-gold)]' : 'text-[var(--text-primary)]'}`}>{attention.length} stores</div>
           </div>
         </div>
 
-        <div className="flex gap-1 bg-[var(--bg-input)]/40 rounded-xl p-1">
-          {TABS.map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors ${tab === t ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted2)]'}`}>
-              {t}{t === 'Attention' && attention.length > 0 ? ` (${attention.length})` : ''}
-            </button>
+        <select value={pipeline} onChange={e => setPipeline(e.target.value)}
+          className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]">
+          <option value="all">All stores ({data.length})</option>
+          {PIPELINE_OPTS.filter(o => o !== 'all').map(o => (
+            <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}{pipelineCounts[o] ? ` (${pipelineCounts[o]})` : ' (0)'}</option>
           ))}
-        </div>
+        </select>
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-28 flex flex-col gap-3">
@@ -143,6 +153,185 @@ export default function SalesScreen() {
           </div>
         )}
         {rows.map(s => <StoreCard key={s.store_id} s={s} phones={phones} />)}
+      </div>
+      {showSalesPopup && <SalesPopup onClose={() => setShowSalesPopup(false)} stores={data} />}
+      {showExpiryPopup && <ExpiryPopup onClose={() => setShowExpiryPopup(false)} stores={data} />}
+    </div>
+  )
+}
+
+
+function monthOptions() {
+  const opts = []
+  const d = new Date()
+  for (let i = 0; i < 12; i++) {
+    const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0')
+    opts.push(`${y}-${m}`)
+    d.setMonth(d.getMonth() - 1)
+  }
+  return opts
+}
+
+function SalesPopup({ onClose, stores }) {
+  const [tab, setTab] = useState('monthly')
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [monthly, setMonthly] = useState([])
+  const [storeMonth, setStoreMonth] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => { (async () => {
+    setLoading(true)
+    const { data } = await supabase
+      .from("delivery_lines")
+      .select("store_id, delivered_on, qty_delivered, unit_price, skus(name, unit_price)")
+      .not("qty_delivered", "is", null)
+    const lines = (data || []).map(l => ({
+      ...l,
+      price: Number(l.unit_price || l.skus?.unit_price || 0),
+    }))
+    const byMonth = {}
+    lines.forEach(l => {
+      const m = (l.delivered_on || "").slice(0, 7)
+      if (!m) return
+      if (!byMonth[m]) byMonth[m] = { month: m, qty: 0, revenue: 0 }
+      byMonth[m].qty += l.qty_delivered
+      byMonth[m].revenue += l.qty_delivered * l.price
+    })
+    setMonthly(Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month)))
+    const byStore = {}
+    lines.filter(l => (l.delivered_on || "").startsWith(month)).forEach(l => {
+      const sid = l.store_id
+      const name = stores.find(s => s.store_id === sid)?.name || "Unknown"
+      if (!byStore[sid]) byStore[sid] = { name, qty: 0, revenue: 0 }
+      byStore[sid].qty += l.qty_delivered
+      byStore[sid].revenue += l.qty_delivered * l.price
+    })
+    setStoreMonth(Object.values(byStore).sort((a, b) => b.revenue - a.revenue))
+    setLoading(false)
+  })() }, [month])
+
+  return (
+    <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        className="m-4 mt-12 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl flex flex-col max-h-[80vh] shadow-2xl">
+        <div className="px-4 py-3 border-b border-[var(--bg-input)]/40 flex items-center justify-between shrink-0">
+          <div className="flex gap-2">
+            {["monthly","by store"].map(t => (
+              <button key={t} onClick={() => setTab(t)}
+                className={"px-3 py-1 rounded-lg text-xs font-medium transition-colors " + (tab === t ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted2)]")}>
+                {t.charAt(0).toUpperCase() + t.slice(1)}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            {tab === "by store" && (
+              <select value={month} onChange={e => setMonth(e.target.value)}
+                className="bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-2 py-1 text-xs outline-none">
+                {monthOptions().map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            )}
+            <button onClick={onClose} className="text-[var(--text-muted)] text-lg">x</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading && <div className="text-center text-[var(--text-muted2)] py-8">Loading...</div>}
+          {!loading && tab === "monthly" && monthly.map(r => (
+            <div key={r.month} className="flex justify-between py-2 border-t border-[var(--bg-input)]/40 text-sm">
+              <span className="text-[var(--text-secondary)]">{r.month}</span>
+              <span className="text-[var(--text-muted2)] text-xs">{r.qty} pcs</span>
+              <span className="text-[var(--text-primary)] font-medium">{fmt(r.revenue)}</span>
+            </div>
+          ))}
+          {!loading && tab === "by store" && storeMonth.map(r => (
+            <div key={r.name} className="flex justify-between py-2 border-t border-[var(--bg-input)]/40 text-sm">
+              <span className="text-[var(--text-secondary)] truncate flex-1">{r.name}</span>
+              <span className="text-[var(--text-muted2)] text-xs ml-2">{r.qty} pcs</span>
+              <span className="text-[var(--text-primary)] font-medium ml-2">{fmt(r.revenue)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ExpiryPopup({ onClose, stores }) {
+  const [tab, setTab] = useState("monthly")
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [monthly, setMonthly] = useState([])
+  const [storeMonth, setStoreMonth] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => { (async () => {
+    setLoading(true)
+    const { data } = await supabase
+      .from("returns")
+      .select("store_id, returned_on, qty_returned, delivery_lines(unit_price, skus(unit_price, name))")
+    const lines = (data || []).map(r => ({
+      ...r,
+      price: Number(r.delivery_lines?.unit_price || r.delivery_lines?.skus?.unit_price || 0),
+    }))
+    const byMonth = {}
+    lines.forEach(l => {
+      const m = (l.returned_on || "").slice(0, 7)
+      if (!m) return
+      if (!byMonth[m]) byMonth[m] = { month: m, qty: 0, value: 0 }
+      byMonth[m].qty += l.qty_returned
+      byMonth[m].value += l.qty_returned * l.price
+    })
+    setMonthly(Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month)))
+    const byStore = {}
+    lines.filter(l => (l.returned_on || "").startsWith(month)).forEach(l => {
+      const sid = l.store_id
+      const name = stores.find(s => s.store_id === sid)?.name || "Unknown"
+      if (!byStore[sid]) byStore[sid] = { name, qty: 0, value: 0 }
+      byStore[sid].qty += l.qty_returned
+      byStore[sid].value += l.qty_returned * l.price
+    })
+    setStoreMonth(Object.values(byStore).sort((a, b) => b.value - a.value))
+    setLoading(false)
+  })() }, [month])
+
+  return (
+    <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        className="m-4 mt-12 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl flex flex-col max-h-[80vh] shadow-2xl">
+        <div className="px-4 py-3 border-b border-[var(--bg-input)]/40 flex items-center justify-between shrink-0">
+          <div className="flex gap-2">
+            {["monthly","by store"].map(t => (
+              <button key={t} onClick={() => setTab(t)}
+                className={"px-3 py-1 rounded-lg text-xs font-medium transition-colors " + (tab === t ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted2)]")}>
+                {t.charAt(0).toUpperCase() + t.slice(1)}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            {tab === "by store" && (
+              <select value={month} onChange={e => setMonth(e.target.value)}
+                className="bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-2 py-1 text-xs outline-none">
+                {monthOptions().map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            )}
+            <button onClick={onClose} className="text-[var(--text-muted)] text-lg">x</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading && <div className="text-center text-[var(--text-muted2)] py-8">Loading...</div>}
+          {!loading && tab === "monthly" && monthly.map(r => (
+            <div key={r.month} className="flex justify-between py-2 border-t border-[var(--bg-input)]/40 text-sm">
+              <span className="text-[var(--text-secondary)]">{r.month}</span>
+              <span className="text-[var(--text-muted2)] text-xs">{r.qty} returned</span>
+              <span className="text-red-400 font-medium">{fmt(r.value)}</span>
+            </div>
+          ))}
+          {!loading && tab === "by store" && storeMonth.map(r => (
+            <div key={r.name} className="flex justify-between py-2 border-t border-[var(--bg-input)]/40 text-sm">
+              <span className="text-[var(--text-secondary)] truncate flex-1">{r.name}</span>
+              <span className="text-[var(--text-muted2)] text-xs ml-2">{r.qty} returned</span>
+              <span className="text-red-400 font-medium ml-2">{fmt(r.value)}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

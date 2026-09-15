@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from './supabaseClient'
 
-const STATUSES = ['prospect','onboard','active','warm','cold','dormant','dropped']
+const STATUSES = ['prospect','onboard','warm','cold','dormant','dropped']
 
 const COLORS = {
   prospect:  'bg-slate-700/60 text-slate-300 border-slate-600/40',
@@ -15,6 +15,14 @@ const COLORS = {
 
 export default function PipelineTag({ storeId, status, updatedBy, onChanged, size = 'sm' }) {
   const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
   const [saving, setSaving] = useState(false)
   const px = size === 'xs' ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-0.5 text-xs'
 
@@ -31,13 +39,13 @@ export default function PipelineTag({ storeId, status, updatedBy, onChanged, siz
   }
 
   return (
-    <div className="relative inline-block">
+    <div className="relative inline-block" ref={ref}>
       <button onClick={() => setOpen(v => !v)}
         className={`${px} rounded-full border font-medium transition-colors ${COLORS[status] || COLORS.prospect} ${saving ? 'opacity-50' : ''}`}>
         {status}{updatedBy === 'system' ? ' ·auto' : ''}
       </button>
       {open && (
-        <div className="absolute top-full mt-1 left-0 z-50 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-xl p-1.5 shadow-2xl min-w-[130px]"
+        <div className="absolute top-full mt-1 left-0 z-50 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-xl p-1.5 shadow-2xl min-w-[130px] max-h-56 overflow-y-auto"
           onClick={e => e.stopPropagation()}>
           {STATUSES.map(s => (
             <button key={s} onClick={() => set(s)}
