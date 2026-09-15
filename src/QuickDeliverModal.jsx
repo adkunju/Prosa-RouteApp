@@ -13,14 +13,15 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
   const [store, setStore] = useState(null)
   const [lines, setLines] = useState({})
   const [saving, setSaving] = useState(false)
+  const [remark, setRemark] = useState('')
 
   useEffect(() => { (async () => {
     const [{ data: st }, { data: sk }, { data: b }, { data: dl }, { data: rdl }] = await Promise.all([
       supabase.from('stores').select('id, name').eq('is_active', true).eq('is_depot', false).order('name'),
-      supabase.from('delivery_lines').select('store_id, delivered_on').order('delivered_on', { ascending: false }).limit(60),
       supabase.from('skus').select('id, name, unit_price').eq('is_active', true).order('name'),
       supabase.from('production_batches').select('id, sku_id, produced_on, expires_on, qty').order('produced_on'),
       supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
+      supabase.from('delivery_lines').select('store_id, delivered_on').order('delivered_on', { ascending: false }).limit(60),
     ])
     const used = {}
     ;(dl || []).forEach(d => { used[d.batch_id] = (used[d.batch_id] || 0) + d.qty_delivered })
@@ -52,6 +53,7 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
     skus.forEach(sk => {
       init[sk.id] = { qty: '', batch_id: batchesFor(sk.id)[0]?.id || '', returned: '', produced_on: '', price: sk.unit_price ?? '' }
     })
+    setRemark('')
     setLines(init)
   }
 
@@ -91,12 +93,25 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
         })
       }
     }
+    // If visit-only (no delivery) save remark to call_logs via plan_stops is not applicable
+    // Record as a store note instead using a simple insert
+    if (remark.trim() && !Object.values(lines).some(l => Number(l?.qty) > 0)) {
+      // Pure visit — log to call_logs against first contact
+      const { data: contacts } = await supabase.from('store_contacts').select('id').eq('store_id', store.id).limit(1)
+      if (contacts?.[0]) {
+        await supabase.from('call_logs').insert({
+          store_contact_id: contacts[0].id,
+          note: remark.trim(),
+          called_at: new Date().toISOString(),
+        })
+      }
+    }
     setSaving(false)
     onSaved?.()
     onClose?.()
   }
 
-  const anything = Object.values(lines).some(l => Number(l?.qty) > 0 || Number(l?.returned) > 0)
+  const anything = remark.trim().length > 0 || Object.values(lines).some(l => Number(l?.qty) > 0 || Number(l?.returned) > 0)
 
   return (
     <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
@@ -194,6 +209,10 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
         <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-[var(--bg-input)]/60 shrink-0 flex gap-2 bg-[var(--bg-root)]/80 backdrop-blur-xl">
           <button onClick={() => { setStore(null); setQuery('') }}
             className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-sm px-3">Change store</button>
+          <textarea value={remark} onChange={e => setRemark(e.target.value)}
+            placeholder="Remark or visit note (optional)"
+            rows={1}
+            className="flex-1 bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-[var(--accent)] resize-none mr-2" />
           <div className="flex flex-col justify-center shrink-0 mr-1">
             <span className="text-[var(--text-muted2)] text-[10px] leading-tight">Invoice</span>
             <span className="text-[var(--text-primary)] font-semibold text-sm leading-tight">

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
+import PipelineTag from './PipelineTag'
 import { TrendingUp, TrendingDown, AlertTriangle, Package, Star } from 'lucide-react'
 
 function fmt(n) { return `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` }
@@ -20,9 +21,13 @@ function StoreCard({ s, phones }) {
     <div className={`bg-[var(--bg-card)]/60 backdrop-blur-xl border rounded-2xl p-4 ${dormant ? 'border-[var(--text-gold)]/30' : 'border-[var(--bg-input)]/40'}`}>
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[var(--text-primary)] text-sm font-medium truncate">{s.name}</span>
             {s.is_pickup && <span className="text-[var(--text-muted2)] text-[10px] shrink-0">pickup</span>}
+            <PipelineTag storeId={s.store_id}
+              status={s.stores?.pipeline_status || 'prospect'}
+              updatedBy={s.stores?.pipeline_updated_by} size="xs"
+              onChanged={() => {}} />
           </div>
           <div className="text-[var(--text-muted2)] text-xs mt-0.5">
             {s.visit_count} deliveries ·
@@ -73,7 +78,7 @@ export default function SalesScreen() {
   useEffect(() => { (async () => {
     const { data: rows } = await supabase
       .from('store_sales_summary')
-      .select('*')
+      .select('*, stores(pipeline_status, pipeline_updated_by)')
       .eq('user_id', (await supabase.auth.getUser()).data.user.id)
       .order('revenue', { ascending: false })
     setData(rows || [])
