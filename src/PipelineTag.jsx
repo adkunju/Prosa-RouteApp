@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 
 const STATUSES = ['prospect','onboard','warm','cold','dormant','dropped']
@@ -19,7 +20,14 @@ export default function PipelineTag({ storeId, status, updatedBy, onChanged, siz
 
   useEffect(() => {
     if (!open) return
-    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const handler = e => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        // also check if click is inside the portal dropdown
+        const portal = document.getElementById('pipeline-portal')
+        if (portal && portal.contains(e.target)) return
+        setOpen(false)
+      }
+    }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
@@ -28,7 +36,7 @@ export default function PipelineTag({ storeId, status, updatedBy, onChanged, siz
 
   async function set(s) {
     setSaving(true)
-    await supabase.from('stores').update({
+    const { error } = await supabase.from('stores').update({
       pipeline_status: s,
       pipeline_updated_by: 'user',
       pipeline_updated_at: new Date().toISOString(),
@@ -38,14 +46,34 @@ export default function PipelineTag({ storeId, status, updatedBy, onChanged, siz
     onChanged?.(s)
   }
 
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+  const btnRef = useRef(null)
+
+  function openWithPos() {
+    if (btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      const dropH = 224
+      const spaceBelow = window.innerHeight - r.bottom
+      const top = spaceBelow < dropH + 20
+        ? Math.max(8, r.top - dropH - 6)
+        : r.bottom + 4
+      const left = Math.min(r.left, window.innerWidth - 160)
+      setPos({ top, left })
+      setOpen(true)
+    }
+  }
+
   return (
     <div className="relative inline-block" ref={ref}>
-      <button onClick={() => setOpen(v => !v)}
-        className={`${px} rounded-full border font-medium transition-colors ${COLORS[status] || COLORS.prospect} ${saving ? 'opacity-50' : ''}`}>
-        {status}{updatedBy === 'system' ? ' ·auto' : ''}
+      <button ref={btnRef} onClick={openWithPos}
+        className={`${px} rounded-full border font-medium transition-all shadow-sm hover:shadow-md ${COLORS[status] || COLORS.prospect} ${saving ? 'opacity-50' : ''} flex items-center gap-0.5`}>
+        <span>{status}</span>
+        {updatedBy === 'system' && <span className="opacity-50 text-[9px]">auto</span>}
+        <span className="opacity-60 text-[9px] ml-0.5">{open ? '▲' : '▼'}</span>
       </button>
-      {open && (
-        <div className="absolute top-full mt-1 left-0 z-50 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-xl p-1.5 shadow-2xl min-w-[130px] max-h-56 overflow-y-auto"
+      {open && createPortal(
+        <div id="pipeline-portal" style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 9999 }}
+          className="bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-xl p-1.5 shadow-2xl min-w-[130px] max-h-56 overflow-y-auto"
           onClick={e => e.stopPropagation()}>
           {STATUSES.map(s => (
             <button key={s} onClick={() => set(s)}
@@ -53,7 +81,8 @@ export default function PipelineTag({ storeId, status, updatedBy, onChanged, siz
               {s}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

@@ -15,7 +15,7 @@ function GrowthBadge({ g }) {
   return <span className="text-[var(--text-muted2)] text-xs">{pct(g)}</span>
 }
 
-function StoreCard({ s, phones }) {
+function StoreCard({ s, phones, onChanged }) {
   const dormant = s.days_since_visit > 14
   return (
     <div className={`bg-[var(--bg-card)]/60 backdrop-blur-xl border rounded-2xl p-4 ${dormant ? 'border-[var(--text-gold)]/30' : 'border-[var(--bg-input)]/40'}`}>
@@ -27,7 +27,7 @@ function StoreCard({ s, phones }) {
             <PipelineTag storeId={s.store_id}
               status={s.pipeline_status || 'prospect'}
               updatedBy={s.pipeline_updated_by} size="xs"
-              onChanged={() => {}} />
+              onChanged={onChanged} />
           </div>
           <div className="text-[var(--text-muted2)] text-xs mt-0.5">
             {s.visit_count} deliveries ·
@@ -74,6 +74,7 @@ export default function SalesScreen() {
   const [loading, setLoading] = useState(true)
   const [pipeline, setPipeline] = useState('all')
   const [showSalesPopup, setShowSalesPopup] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const [showExpiryPopup, setShowExpiryPopup] = useState(false)
   const phones = useStoreContacts()
 
@@ -85,7 +86,7 @@ export default function SalesScreen() {
       .order('revenue', { ascending: false })
     setData(rows || [])
     setLoading(false)
-  })() }, [])
+  })() }, [reloadKey])
 
   const top = data.filter(s => s.visit_count >= 5).slice(0, 10)
 
@@ -152,7 +153,7 @@ export default function SalesScreen() {
             <p>No stores in this view</p>
           </div>
         )}
-        {rows.map(s => <StoreCard key={s.store_id} s={s} phones={phones} />)}
+        {rows.map(s => <StoreCard key={s.store_id} s={s} phones={phones} onChanged={() => setReloadKey(k => k + 1)} />)}
       </div>
       {showSalesPopup && <SalesPopup onClose={() => setShowSalesPopup(false)} stores={data} />}
       {showExpiryPopup && <ExpiryPopup onClose={() => setShowExpiryPopup(false)} stores={data} />}
