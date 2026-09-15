@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import PipelineTag from './PipelineTag'
+import { useGeolocation, haversineKm } from './useGeolocation'
 import { TrendingUp, TrendingDown, AlertTriangle, Package, Star } from 'lucide-react'
 
 function fmt(n) { return `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` }
@@ -31,9 +32,8 @@ function StoreCard({ s, phones, onChanged }) {
           </div>
           <div className="text-[var(--text-muted2)] text-xs mt-0.5">
             {s.visit_count} deliveries ·
-            {s.last_visit
-              ? ` last ${s.days_since_visit}d ago`
-              : ' never delivered'}
+            {s.last_visit ? ` last ${s.days_since_visit}d ago` : ' never delivered'}
+            {position && s._coords ? ` · ${haversineKm(position.lat, position.lng, s._coords.lat, s._coords.lng).toFixed(1)} km 📍` : ''}
 
           </div>
         </div>
@@ -75,6 +75,8 @@ export default function SalesScreen() {
   const [pipeline, setPipeline] = useState('all')
   const [showSalesPopup, setShowSalesPopup] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const { position } = useGeolocation()
+  const [sortBy, setSortBy] = useState('distance')
   const [showExpiryPopup, setShowExpiryPopup] = useState(false)
   const phones = useStoreContacts()
 
@@ -84,7 +86,11 @@ export default function SalesScreen() {
       .select('*')
       .eq('user_id', (await supabase.auth.getUser()).data.user.id)
       .order('revenue', { ascending: false })
-    setData(rows || [])
+    // fetch store coords for distance sort
+    const { data: coords } = await supabase.from('stores').select('id, lat, lng')
+    const coordMap = {}
+    ;(coords || []).forEach(s => { coordMap[s.id] = { lat: s.lat, lng: s.lng } })
+    setData((rows || []).map(s => ({ ...s, _coords: coordMap[s.store_id] })))
     setLoading(false)
   })() }, [reloadKey])
 
@@ -107,7 +113,17 @@ export default function SalesScreen() {
     return acc
   }, {})
 
-  const rows = pipeline === 'all' ? data : data.filter(s => s.pipeline_status === pipeline)
+  const filtered = pipeline === 'all' ? data : data.filter(s => s.pipeline_status === pipeline)
+  const rows = [...filtered].sort((a, b) => {
+    if (sortBy === 'name') return a.name.localeCompare(b.name)
+    if (sortBy === 'last_delivery') return (b.days_since_visit ?? 9999) - (a.days_since_visit ?? 9999)
+    if (sortBy === 'distance' && position) {
+      const da = a._coords ? haversineKm(position.lat, position.lng, a._coords.lat, a._coords.lng) : 9999
+      const db = b._coords ? haversineKm(position.lat, position.lng, b._coords.lat, b._coords.lng) : 9999
+      return da - db
+    }
+    return Number(b.revenue) - Number(a.revenue) // default: revenue
+  })
 
   const thisMonth = new Date().toISOString().slice(0, 7)
   const totalRevenue = data.reduce((n, s) => n + Number(s.revenue), 0)
@@ -137,13 +153,22 @@ export default function SalesScreen() {
           </div>
         </div>
 
-        <select value={pipeline} onChange={e => setPipeline(e.target.value)}
+        <div className="flex gap-2">
+          <select value={pipeline} onChange={e => setPipeline(e.target.value)}
           className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]">
           <option value="all">All stores ({data.length})</option>
           {PIPELINE_OPTS.filter(o => o !== 'all').map(o => (
             <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}{pipelineCounts[o] ? ` (${pipelineCounts[o]})` : ' (0)'}</option>
           ))}
-        </select>
+          </select>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+            className="bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]">
+            <option value="revenue">Revenue</option>
+            <option value="name">Name</option>
+            <option value="last_delivery">Last delivery</option>
+            {position && <option value="distance">Distance</option>}
+          </select>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-28 flex flex-col gap-3">
