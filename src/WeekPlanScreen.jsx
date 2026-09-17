@@ -789,7 +789,7 @@ export default function WeekPlanScreen() {
       {!loading && dueStores.length > 0 && (
         <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
           <button
-            onClick={saveWeekPlan}
+            onClick={() => saveWeekPlan()}
             disabled={saving || saved}
             className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors"
           >
