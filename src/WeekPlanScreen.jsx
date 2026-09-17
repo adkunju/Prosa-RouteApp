@@ -221,7 +221,7 @@ export default function WeekPlanScreen() {
     stores_to_assign.forEach(s => {
       const rawDue = daysUntil(s.due_date)
       const overdue = rawDue < 0
-      const dueDay = overdue ? NUM_DAYS - 1 : Math.max(0, Math.min(NUM_DAYS - 1, rawDue))
+      const dueDay = overdue ? 0 : Math.max(0, Math.min(NUM_DAYS - 1, rawDue))
       let placed = false
       for (let day = 0; day <= dueDay; day++) {
         // Skip days where required SKUs aren't yet available from any batch
