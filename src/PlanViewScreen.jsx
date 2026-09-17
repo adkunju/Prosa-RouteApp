@@ -769,8 +769,8 @@ export default function PlanViewScreen() {
         <div className="relative flex-1">
           <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
             className="w-full bg-[var(--bg-card)] text-[var(--text-primary)] text-sm rounded-lg px-3 py-2 outline-none appearance-none">
-            <option value={today()}>{today()} (today)</option>
-            {dates.filter(d => d !== today()).map(d => <option key={d} value={d}>{d}</option>)}
+            {dates.map(d => <option key={d} value={d}>{d}{d === today() ? ' (today)' : ''}</option>)}
+            {!dates.includes(today()) && <option value={today()}>{today()} (today) — no plan</option>}
           </select>
           <ChevronDown size={14} className="absolute right-3 top-2.5 text-[var(--text-muted)] pointer-events-none" />
         </div>
