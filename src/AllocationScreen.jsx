@@ -4,7 +4,8 @@ import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { computeProposedQty } from './forecastMath'
 import { Package, CheckCircle, ChevronDown } from 'lucide-react'
 
-const today = () => new Date().toISOString().slice(0, 10)
+const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+const today = () => localDate()
 
 export default function AllocationScreen() {
   const [rows, setRows] = useState([])
@@ -17,11 +18,13 @@ export default function AllocationScreen() {
   const phones = useStoreContacts()
   const [caps, setCaps] = useState({})        // sku_name -> capacity
   const [rationed, setRationed] = useState(null) // summary after applying
-  const [showSkipped, setShowSkipped] = useState(false) // days ahead to include as "due"
+  const [showSkipped, setShowSkipped] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
+  const [spareQtys, setSpareQtys] = useState({}) // sku_name -> spare qty // days ahead to include as "due"
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase.from('store_sku_forecast').select('*')
+    const { data } = await supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped')
     setRows(data || [])
     setLoading(false)
   }
@@ -73,7 +76,7 @@ export default function AllocationScreen() {
         .sort((a, b) => {
           const d = String(a.next_visit_due).localeCompare(String(b.next_visit_due))
           if (d !== 0) return d
-          return (Number(b.avg_daily_rate) || 0) - (Number(a.avg_daily_rate) || 0)
+  return (Number(b.avg_daily_rate) || 0) - (Number(a.avg_daily_rate) || 0)
         })
 
       let left = cap
@@ -167,6 +170,21 @@ export default function AllocationScreen() {
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
+
+  // Summary for confirm modal — group approved qtys by SKU name
+  const skuNames = [...new Set(dueRows.map(r => r.sku_name))]
+  const totalsForConfirm = skuNames.map(name => {
+    const sample = dueRows.find(r => r.sku_name === name)
+    const skuQty = dueRows
+      .filter(r => r.sku_name === name)
+      .reduce((s, r) => s + Number(getQty(r) || 0), 0)
+    return {
+      sku_name: name,
+      sku_id: sample?.sku_id || null,
+      shelf_days: sample?.shelf_life_days || 7,
+      qty: skuQty,
+    }
+  }).filter(t => t.qty > 0)
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -286,6 +304,7 @@ export default function AllocationScreen() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1">
                   <span className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</span>
+                  {row.pipeline_status === 'dormant' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[var(--text-gold)]/20 text-[var(--text-gold)] shrink-0">DORMANT</span>}
                   <ContactButtons phone={phones[row.store_id]} />
                 </div>
                 <div className="text-[var(--text-muted)] text-xs mt-0.5">
@@ -328,19 +347,79 @@ export default function AllocationScreen() {
       {dueRows.length > 0 && (
         <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
         <button
-          onClick={() => {
-            const totals = Object.entries(totalsBySku)
-              .filter(([, q]) => Number(q) > 0)
-              .map(([sku_name, qty]) => ({ sku_name, qty }))
-            if (totals.length === 0) return
-            sessionStorage.setItem('prosa_production_prefill', JSON.stringify({ date: planDate, totals }))
-            window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { tab: 'settings_production' } }))
-          }}
+          onClick={() => { if (totalsForConfirm.length) setShowConfirm(true) }}
           disabled={Object.values(totalsBySku).every(q => !Number(q))}
           className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors"
         >
-          Move to production
+          Confirm Production
         </button>
+        </div>
+      )}
+
+      {showConfirm && (
+        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col justify-end pb-20"
+          onClick={() => setShowConfirm(false)}>
+          <div onClick={e => e.stopPropagation()}
+            className="bg-[var(--bg-card)] border-t border-[var(--bg-input)]/60 rounded-t-2xl w-full shadow-2xl flex flex-col" style={{maxHeight: 'min(80dvh, 600px)'}}>
+            <div className="overflow-y-auto flex-1 p-6 pb-2">
+            <div className="text-[var(--text-primary)] text-base font-semibold mb-1">Confirm production</div>
+            <div className="text-[var(--text-muted2)] text-xs mb-4">This will log today's batch and open the schedule.</div>
+            <div className="bg-[var(--bg-input)]/40 rounded-xl p-3 mb-4">
+              {totalsForConfirm.map(t => (
+                <div key={t.sku_name} className="border-t border-[var(--bg-input)]/30 first:border-0 py-1.5">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-[var(--text-secondary)]">{t.sku_name}</span>
+                    <span className="text-[var(--text-primary)] font-semibold">{t.qty} pcs</span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[var(--text-muted2)] text-xs">+ spare</span>
+                    <input type="number" min="0" value={spareQtys[t.sku_name] ?? ''}
+                      onChange={e => setSpareQtys(q => ({ ...q, [t.sku_name]: e.target.value === '' ? 0 : Number(e.target.value) }))}
+                      placeholder="0"
+                      className="w-16 bg-[var(--bg-input)] text-[var(--text-gold)] font-semibold rounded-lg px-2 py-1 text-sm outline-none text-center" />
+                    <span className="text-[var(--text-muted2)] text-xs">pcs</span>
+                  </div>
+                </div>
+              ))}
+              <div className="text-[var(--text-muted2)] text-xs mt-2 pt-2 border-t border-[var(--bg-input)]/30">for {planDate}</div>
+            </div>
+            </div>
+            <div className="p-6 pt-3 flex gap-3">
+              <button onClick={() => setShowConfirm(false)}
+                className="flex-1 py-2.5 rounded-xl border border-[var(--bg-input)] text-[var(--text-secondary)] text-sm">
+                Edit
+              </button>
+              <button onClick={async () => {
+                  const { data: { user } } = await supabase.auth.getUser()
+                  const batchRows = totalsForConfirm.map(t => ({
+                    produced_on: planDate,
+                    expires_on: (() => { const [y,m,day] = planDate.split('-').map(Number); const d = new Date(y, m-1, day + (t.shelf_days || 7)); return localDate(d) })(),
+                    sku_id: t.sku_id,
+                    qty: t.qty,
+                    user_id: user.id,
+                  }))
+                  await supabase.from('production_batches').insert(batchRows)
+                  const spareBatchRows = totalsForConfirm
+                    .filter(t => (spareQtys[t.sku_name] || 0) > 0)
+                    .map(t => ({
+                      produced_on: planDate,
+                      expires_on: (() => { const [y,m,d] = planDate.split('-').map(Number); const dt = new Date(y, m-1, d + (t.shelf_days || 7)); return localDate(dt) })(),
+                      sku_id: t.sku_id,
+                      qty: spareQtys[t.sku_name],
+                      user_id: user.id,
+                      is_spare: true,
+                    }))
+                  if (spareBatchRows.length) await supabase.from('production_batches').insert(spareBatchRows)
+                  setSpareQtys({})
+                  setShowConfirm(false)
+                  window.dispatchEvent(new CustomEvent('prosa:production_confirmed'))
+                  window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { tab: 'schedule' } }))
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-[var(--accent)] text-white text-sm font-semibold">
+                Confirm
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

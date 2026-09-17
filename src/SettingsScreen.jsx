@@ -11,7 +11,11 @@ import { useSettings } from './useSettings'
 
 export default function SettingsScreen({ theme, setTheme }) {
   const { settings, update } = useSettings()
-  const [section, setSection] = useState(null)
+  const [section, setSection] = useState(() => {
+    const s = sessionStorage.getItem('prosa_settings_section')
+    if (s) { sessionStorage.removeItem('prosa_settings_section'); return s }
+    return null
+  })
   useEffect(() => {
     const fn = e => setSection(e.detail)
     window.addEventListener('prosa:settings_section', fn)

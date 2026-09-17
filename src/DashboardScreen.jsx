@@ -159,15 +159,16 @@ export default function DashboardScreen() {
 
   useEffect(() => { (async () => {
     const [{ data: b }, { data: dl }] = await Promise.all([
-      supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, skus(name)').order('expires_on'),
+      supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, is_spare, skus(name)').order('expires_on'),
       supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
     ])
     const used = {}
     ;(dl || []).forEach(x => { used[x.batch_id] = (used[x.batch_id] || 0) + x.qty_delivered })
     const today = new Date().toISOString().slice(0, 10)
-    setStock((b || [])
+    const allBatches = (b || [])
       .map(x => ({ ...x, available: x.qty - (used[x.id] || 0) }))
-      .filter(x => x.available > 0 && x.expires_on >= today))
+      .filter(x => x.available > 0 && x.expires_on >= today)
+    setStock(allBatches)
   })() }, [])
 
   if (loading || !stats) {
@@ -195,7 +196,7 @@ export default function DashboardScreen() {
       <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
         <div className="flex items-center justify-between mb-2">
           <span className="text-[var(--text-muted)] text-xs">Stock in hand</span>
-          <span className="text-[var(--text-muted2)] text-xs">{stock.length} batch{stock.length !== 1 ? 'es' : ''}</span>
+          <span className="text-[var(--text-muted2)] text-xs">{stock.filter(b => !b.is_spare).length} batch{stock.filter(b => !b.is_spare).length !== 1 ? 'es' : ''}{stock.some(b => b.is_spare) ? ` + spare` : ''}</span>
         </div>
         {stock.length === 0 ? (
           <p className="text-[var(--text-muted2)] text-sm">Nothing in stock</p>
@@ -203,15 +204,16 @@ export default function DashboardScreen() {
           <>
             {Object.entries(stock.reduce((acc, b) => {
               const n = b.skus?.name || 'Unknown'
-              if (!acc[n]) acc[n] = { available: 0, made: 0 }
-              acc[n].available += b.available
-              acc[n].made += b.qty
+              if (!acc[n]) acc[n] = { available: 0, made: 0, spareAvailable: 0 }
+              if (b.is_spare) acc[n].spareAvailable += b.available
+              else { acc[n].available += b.available; acc[n].made += b.qty }
               return acc
             }, {})).map(([name, qty]) => (
               <div key={name} className="flex justify-between text-sm py-1">
                 <span className="text-[var(--text-secondary)]">{name}</span>
                 <span className="text-[var(--text-primary)] font-semibold">
-                  {qty.available} <span className="text-[var(--text-muted2)] font-normal">/ {qty.made} pcs</span>
+                  {qty.available + qty.spareAvailable} <span className="text-[var(--text-muted2)] font-normal">/ {qty.made + qty.spareAvailable} pcs</span>
+                  {qty.spareAvailable > 0 && <span className="text-[var(--text-gold)] font-normal text-xs ml-1">({qty.spareAvailable} spare)</span>}
                 </span>
               </div>
             ))}
@@ -220,7 +222,10 @@ export default function DashboardScreen() {
                 const days = Math.ceil((new Date(b.expires_on) - new Date()) / 86400000)
                 return (
                   <div key={b.id} className="flex justify-between text-xs py-0.5">
-                    <span className="text-[var(--text-muted2)]">{b.skus?.name} · made {b.produced_on}</span>
+                    <span className="text-[var(--text-muted2)]">
+                      {b.skus?.name} · made {b.produced_on}
+                      {b.is_spare && <span className="text-[var(--text-gold)] ml-1">(spare)</span>}
+                    </span>
                     <span className={days <= 1 ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted)]'}>
                       {b.available}/{b.qty} pcs · {days}d left
                     </span>

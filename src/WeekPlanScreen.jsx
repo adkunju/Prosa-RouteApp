@@ -1,4 +1,5 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import { useSettings } from './useSettings'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
@@ -17,7 +18,8 @@ function dayLabel(iso, { short = false } = {}) {
 function dateForOffset(offset) {
   const d = new Date()
   d.setDate(d.getDate() + offset)
-  return d.toISOString().slice(0, 10)
+  // Use local date parts to avoid UTC midnight drift (IST = UTC+5:30)
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 }
 
 function localToday() {
@@ -71,15 +73,29 @@ export default function WeekPlanScreen() {
   const [showPickupDetail, setShowPickupDetail] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [stalePlans, setStalePlans] = useState([])
+  const [pendingProduction, setPendingProduction] = useState(null)
+  const [showSkipped, setShowSkipped] = useState(false)
+  const [cacheRestored, setCacheRestored] = useState(false)
+  const [showProductionConfirm, setShowProductionConfirm] = useState(false)
+  const [showAddStore, setShowAddStore] = useState(false)
+  const [addStoreQuery, setAddStoreQuery] = useState('')
+  const [addStoreQtys, setAddStoreQtys] = useState({}) // sku_id -> qty
+  const [addStoreDay, setAddStoreDay] = useState(0)
+  const [prodQtys, setProdQtys] = useState({})
+  const [qtyOverrides, setQtyOverrides] = useState({}) // `storeId-skuId` -> qty
   const [matrixMap, setMatrixMap] = useState({})
+  const [availableStock, setAvailableStock] = useState({}) // sku_id -> available pcs
+  const [spareStock, setSpareStock] = useState({}) // sku_id -> spare pcs
   const [matrixMeters, setMatrixMeters] = useState({})
   const [depotId, setDepotId] = useState(null)
 
+  const loadRef = useRef(null)
   async function load() {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
 
-    const todayStr = new Date().toISOString().slice(0, 10)
+    const todayStr = localToday()
+    const localDateStr = todayStr
     const { data: existingPlans } = await supabase.from('plans')
       .select('plan_date, plan_stops(store_id)')
       .eq('user_id', user.id)
@@ -87,11 +103,40 @@ export default function WeekPlanScreen() {
       .lt('plan_date', todayStr)
     setStalePlans(existingPlans || [])
 
-    const [{ data: forecast }, { data: stores }, { data: matrix }] = await Promise.all([
-      supabase.from('store_sku_forecast').select('*'),
+    const [{ data: forecast }, { data: stores }, { data: matrix }, { data: batches }, { data: delivered }] = await Promise.all([
+      supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
       supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup').eq('is_active', true),
       supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds, meters'),
+      supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, is_spare').gt('expires_on', localDateStr).order('produced_on'),
+      supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
     ])
+
+    // Build available stock map — split regular vs spare
+    const consumedByBatch = {}
+    ;(delivered || []).forEach(d => { consumedByBatch[d.batch_id] = (consumedByBatch[d.batch_id] || 0) + d.qty_delivered })
+    const stockBySku = {}
+    const spareBySku = {}
+    const batchList = (batches || []).map(b => ({
+      ...b,
+      available: Math.max(0, b.qty - (consumedByBatch[b.id] || 0))
+    })).filter(b => b.available > 0)
+    batchList.forEach(b => {
+      if (b.is_spare) spareBySku[b.sku_id] = (spareBySku[b.sku_id] || 0) + b.available
+      else stockBySku[b.sku_id] = (stockBySku[b.sku_id] || 0) + b.available
+    })
+    setAvailableStock(stockBySku)
+    setSpareStock(spareBySku)
+    // Build per-day stock: how much of each SKU is available on each plan day
+    const stockBySkuByDay = {} // sku_id -> array indexed by day offset
+    for (let d = 0; d < NUM_DAYS; d++) {
+      const dayDate = planDates[d] || dateForOffset(d)
+      batchList.forEach(b => {
+        if (b.produced_on <= dayDate) {
+          if (!stockBySkuByDay[b.sku_id]) stockBySkuByDay[b.sku_id] = Array(NUM_DAYS).fill(0)
+          stockBySkuByDay[b.sku_id][d] = (stockBySkuByDay[b.sku_id][d] || 0) + b.available
+        }
+      })
+    }
 
     const depot = stores.find(s => s.is_depot)
     const matrixMap = {}
@@ -127,10 +172,38 @@ export default function WeekPlanScreen() {
     // route stop, so they are kept out of day assignment entirely.
     const allDue = Object.values(byStore)
     const stores_due = allDue.filter(s => !s.is_pickup)
-    setPickupDue(allDue.filter(s => s.is_pickup))
+    const pickupStores = allDue.filter(s => s.is_pickup)
+
+    // Ration available stock across ALL due stores using total stock across all days
+    // Use cumulative stock (today + future batches) for allocation planning
+    const runningStock = { ...stockBySku }
+    stores_due.forEach(s => {
+      s.skuReqs = s.skuReqs.map(r => {
+        const avail = runningStock[r.sku_id] ?? 0
+        const qty = Math.min(r.qty, avail)
+        runningStock[r.sku_id] = Math.max(0, avail - qty)
+        return { ...r, qty, requested: r.qty }
+      })
+    })
+
+    // Ration pickup stores from remaining stock after delivery stores
+    pickupStores.forEach(s => {
+      s.skuReqs = s.skuReqs.map(r => {
+        const avail = runningStock[r.sku_id] ?? 0
+        const qty = Math.min(r.qty, avail)
+        runningStock[r.sku_id] = Math.max(0, avail - qty)
+        return { ...r, qty, requested: r.qty }
+      })
+    })
+    setPickupDue(pickupStores)
+
+    // Split: zero-stock stores go to skipped popup, deliverable get routed
+    const zeroStockSet = new Set(stores_due.filter(s => s.skuReqs.every(r => r.qty === 0)).map(s => s.store_id))
+    const stores_to_assign = stores_due.filter(s => !zeroStockSet.has(s.store_id))
+    const zeroStockStores = stores_due.filter(s => zeroStockSet.has(s.store_id))
 
     // Greedy day assignment: sort by due date, then bearing (cluster direction)
-    stores_due.sort((a, b) => {
+    stores_to_assign.sort((a, b) => {
       const d = new Date(a.due_date) - new Date(b.due_date)
       if (d !== 0) return d
       return a.bearing - b.bearing
@@ -145,14 +218,18 @@ export default function WeekPlanScreen() {
       return matrixMap[`${fromId}_${toId}`] ?? matrixMap[`${toId}_${fromId}`] ?? 600 // fallback 10 min
     }
 
-    stores_due.forEach(s => {
+    stores_to_assign.forEach(s => {
       const rawDue = daysUntil(s.due_date)
-      // Already overdue: one more day changes little, so let it land anywhere in
-      // the week rather than forcing every overdue store onto Day 1.
       const overdue = rawDue < 0
       const dueDay = overdue ? NUM_DAYS - 1 : Math.max(0, Math.min(NUM_DAYS - 1, rawDue))
       let placed = false
       for (let day = 0; day <= dueDay; day++) {
+        // Skip days where required SKUs aren't yet available from any batch
+        const stockReadyOnDay = s.skuReqs.every(r => {
+          if (r.qty === 0) return true
+          return (stockBySkuByDay[r.sku_id]?.[day] ?? 0) > 0
+        })
+        if (!stockReadyOnDay) continue
         const list = dayLists[day]
         const last = list.length ? list[list.length - 1] : depot.id
         const prevReturn = list.length ? legSeconds(last, depot.id) : 0
@@ -170,6 +247,8 @@ export default function WeekPlanScreen() {
       // Not in the due window — try any other day, still inside the budget.
       if (!placed) {
         for (let day = 0; day < NUM_DAYS && !placed; day++) {
+          const stockReadyOnDay = s.skuReqs.every(r => r.qty === 0 || (stockBySkuByDay[r.sku_id]?.[day] ?? 0) > 0)
+          if (!stockReadyOnDay) continue
           const list = dayLists[day]
           const last = list.length ? list[list.length - 1] : depot.id
           const prevReturn = list.length ? legSeconds(last, depot.id) : 0
@@ -182,29 +261,118 @@ export default function WeekPlanScreen() {
           }
         }
       }
-      // Fits nowhere inside the working day: leave it unscheduled rather than
-      // pretending a day can absorb it.
+    // Fits nowhere inside the working day: leave it unscheduled
       if (!placed) overflow.push(s)
     })
+
+
 
     setMatrixMap(matrixMap)
     setMatrixMeters(metersMap)
     setDepotId(depot.id)
-    setUnscheduled(overflow)
+    setUnscheduled([
+      ...zeroStockStores.map(s => ({ ...s, skipReason: 'No stock available today' })),
+      ...overflow.map(s => ({ ...s, skipReason: 'No gap in time budget' })),
+    ])
     // Ignore saved assignments from before today — they're stale and would
     // override the fresh computation with yesterday's plan.
     const staleIds = new Set()
     ;(existingPlans || []).filter(p => p.plan_date < todayStr).forEach(p => {
       ;(p.plan_stops || []).forEach(ps => staleIds.add(ps.store_id))
     })
-    stores_due.forEach(s => { if (staleIds.has(s.store_id)) delete assign[s.store_id] })
+    stores_to_assign.forEach(s => { if (staleIds.has(s.store_id)) delete assign[s.store_id] })
 
-    setDueStores(stores_due)
+    setDueStores(stores_due.filter(s => s.skuReqs.some(r => r.qty > 0)))
     setAssignment(assign)
     setLoading(false)
   }
 
-  useEffect(() => { if (settingsLoaded) load() }, [settingsLoaded, NUM_DAYS, DAILY_BUDGET_MIN, planDates.join(',')])
+  loadRef.current = load
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem('prosa_production_prefill')
+    if (raw) { try { setPendingProduction(JSON.parse(raw)) } catch { /* ignore */ } }
+    const clear = () => setPendingProduction(null)
+    const onProdConfirmed = () => {
+      setPendingProduction(null)
+      sessionStorage.removeItem('prosa_schedule_cache')
+      loadRef.current?.()
+    }
+    window.addEventListener('prosa:production_confirmed', onProdConfirmed)
+    return () => window.removeEventListener('prosa:production_confirmed', onProdConfirmed)
+  }, [])
+
+  // Clear cache if budget setting changed
+  useEffect(() => {
+    const cached = sessionStorage.getItem('prosa_schedule_cache')
+    if (cached) {
+      try {
+        const { budget } = JSON.parse(cached)
+        if (budget !== undefined && budget !== DAILY_BUDGET_MIN) {
+          sessionStorage.removeItem('prosa_schedule_cache')
+        }
+      } catch { /* ignore */ }
+    }
+  }, [DAILY_BUDGET_MIN])
+
+  useEffect(() => {
+    if (!settingsLoaded) return
+    // Restore cached state if the plan dates haven't changed
+    const cached = sessionStorage.getItem('prosa_schedule_cache')
+    if (cached) {
+      try {
+        const { dates, assignment: savedAssign, dueStores: savedStores, pickupDue: savedPickup, availableStock: savedStock, spareStock: savedSpare, locked: savedLocked, unscheduled: savedUnscheduled, qtyOverrides: savedQtyOverrides } = JSON.parse(cached)
+        if (dates === planDates.join(',')) {
+          setDueStores((savedStores || []).filter(s => s.skuReqs.some(r => r.qty > 0)))
+          setUnscheduled(savedUnscheduled || [])
+          setQtyOverrides(savedQtyOverrides || {})
+          setSpareStock(savedSpare || {})
+          setAssignment(savedAssign || {})
+          setPickupDue(savedPickup || [])
+          setAvailableStock(savedStock || {})
+          setLocked(savedLocked || {})
+          setAvailableStock(savedStock || {})
+          // Still need depot + matrix even on cache restore
+          ;(async () => {
+          const [{ data: storesData }, { data: matrixData }] = await Promise.all([
+            supabase.from('stores').select('id, is_depot').eq('is_active', true),
+            supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds, meters'),
+          ])
+          const depot = (storesData || []).find(s => s.is_depot)
+          if (depot) setDepotId(depot.id)
+          const mm = {}, ms = {}
+          ;(matrixData || []).forEach(r => {
+            mm[`${r.from_store_id}_${r.to_store_id}`] = r.seconds
+            ms[`${r.from_store_id}_${r.to_store_id}`] = r.meters
+          })
+          setMatrixMap(mm)
+          setMatrixMeters(ms)
+          setLoading(false)
+          setCacheRestored(true)
+          })()
+          return
+        }
+      } catch { /* ignore */ }
+    }
+    load()
+  }, [settingsLoaded, NUM_DAYS, DAILY_BUDGET_MIN, planDates.join(',')])
+
+  // Persist schedule state so tab switches don't reset it
+  useEffect(() => {
+    if (loading || dueStores.length === 0 || Object.keys(assignment).length === 0 || cacheRestored) { setCacheRestored(false); return }
+    sessionStorage.setItem('prosa_schedule_cache', JSON.stringify({
+      dates: planDates.join(','),
+      budget: DAILY_BUDGET_MIN,
+      assignment,
+      dueStores,
+      pickupDue,
+      availableStock,
+      spareStock,
+      locked,
+      unscheduled,
+      qtyOverrides,
+    }))
+  }, [assignment, dueStores, locked, pickupDue, availableStock, spareStock, unscheduled, qtyOverrides])
 
   function moveStore(storeId, newDay) {
     setAssignment(a => ({ ...a, [storeId]: newDay }))
@@ -297,6 +465,8 @@ export default function WeekPlanScreen() {
     setResetting(true)
     setAssignment({})
     setDueStores([])
+    setQtyOverrides({})
+    sessionStorage.removeItem('prosa_schedule_cache')
     const { data: { user } } = await supabase.auth.getUser()
     const today = new Date().toISOString().slice(0, 10)
     // Find all future plans
@@ -317,7 +487,7 @@ export default function WeekPlanScreen() {
     load() // recompute from scratch
   }
 
-  async function saveWeekPlan() {
+  async function saveWeekPlan(_dueStores, _assignment, _qtyOverrides) {
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
 
@@ -338,9 +508,19 @@ export default function WeekPlanScreen() {
     const { data: existingStops } = await supabase.from('plan_stops')
       .select('id, plan_id, store_id, delivery_lines(id)').in('plan_id', planIds)
 
+    const effectiveDueStores = _dueStores || dueStores
+    const effectiveAssignment = _assignment || assignment
+    const effectiveOverrides = _qtyOverrides || qtyOverrides
+    const effectiveByDay = {}
+    effectiveDueStores.forEach(s => {
+      const day = effectiveAssignment[s.store_id] ?? 0
+      if (!effectiveByDay[day]) effectiveByDay[day] = []
+      effectiveByDay[day].push(s)
+    })
+
     const wanted = new Set()
     dates.forEach((date, day) => {
-      (byDay[day] || []).forEach(s => wanted.add(`${planIdByDate[date]}_${s.store_id}`))
+      (effectiveByDay[day] || []).forEach(s => wanted.add(`${planIdByDate[date]}_${s.store_id}`))
     })
 
     const toDelete = (existingStops || [])
@@ -358,7 +538,7 @@ export default function WeekPlanScreen() {
     dates.forEach((date, day) => {
       const planId = planIdByDate[date]
       if (!planId) return
-      ;(byDay[day] || []).forEach((s, idx) => {
+      ;(effectiveByDay[day] || []).forEach((s, idx) => {
         stopRows.push({ plan_id: planId, store_id: s.store_id, stop_order: idx + 1, locked: !!locked[s.store_id] })
       })
     })
@@ -375,11 +555,13 @@ export default function WeekPlanScreen() {
     const reqRows = []
     dates.forEach((date, day) => {
       const planId = planIdByDate[date]
-      ;(byDay[day] || []).forEach(s => {
+      ;(effectiveByDay[day] || []).forEach(s => {
         const stopId = stopIdByKey[`${planId}_${s.store_id}`]
         if (!stopId) return
         s.skuReqs.forEach(r => {
-          reqRows.push({ plan_stop_id: stopId, sku_id: r.sku_id, proposed_qty: r.qty, approved_qty: r.qty, source: 'auto' })
+          const key = `${s.store_id}-${r.sku_id}`
+          const qty = effectiveOverrides[key] !== undefined ? Number(effectiveOverrides[key]) : r.qty
+          reqRows.push({ plan_stop_id: stopId, sku_id: r.sku_id, proposed_qty: r.qty, approved_qty: qty, source: 'auto' })
         })
       })
     })
@@ -404,16 +586,100 @@ export default function WeekPlanScreen() {
           const weekStart = planDates[0] || today
           const stale = stalePlans.some(p => p.plan_date >= weekStart && p.plan_date < today && p.plan_stops?.length > 0)
           return (
+            <>
             <button onClick={resetPlan} disabled={resetting}
               className={`text-xs disabled:opacity-50 transition-colors font-medium ${stale ? 'text-red-400 hover:text-red-300' : 'text-[var(--text-muted2)] hover:text-[var(--text-primary)]'}`}>
               {resetting ? 'Resetting...' : stale ? '⚠ Reset & recompute' : 'Reset & recompute'}
             </button>
-          )
+            <button onClick={() => { setAddStoreQuery(''); setAddStoreQtys({}); setAddStoreDay(0); setShowAddStore(true) }}
+              className="text-[var(--accent)] text-xs font-medium hover:opacity-80 transition-colors ml-2">
+              + Add store
+            </button>
+          </>
+        )
         })()}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-5">
         {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Computing assignments...</div>}
+
+        {pendingProduction && (
+          <div className="bg-[var(--text-gold)]/10 border border-[var(--text-gold)]/40 rounded-2xl p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[var(--text-primary)] text-sm font-semibold mb-1">⚠ Production not confirmed</div>
+                <div className="text-[var(--text-muted2)] text-xs">
+                  {pendingProduction.totals.map(t => `${t.sku_name}: ${t.qty} pcs`).join(' · ')} · for {pendingProduction.date}
+                </div>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={() => setPendingProduction(null)}
+                  className="text-[var(--text-muted2)] text-xs px-2 py-2 hover:text-[var(--text-primary)]">
+                  Dismiss
+                </button>
+                <button
+                  onClick={() => setShowProductionConfirm(true)}
+                  className="bg-[var(--text-gold)] text-white text-xs font-semibold rounded-xl px-3 py-2 hover:opacity-90">
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!loading && unscheduled.length > 0 && (
+          <div className="bg-red-900/20 border border-red-700/30 rounded-2xl p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-red-300 text-sm font-medium">
+                {unscheduled.length} store{unscheduled.length > 1 ? 's' : ''} skipped
+              </span>
+              <button onClick={() => setShowSkipped(true)}
+                className="text-red-300 hover:text-white text-xs underline">
+                View
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!loading && Object.keys(availableStock).length > 0 && (() => {
+          // Build sku name map from dueStores
+          const skuNames = {}
+          dueStores.forEach(s => s.skuReqs.forEach(r => { skuNames[r.sku_id] = r.name }))
+          pickupDue.forEach(s => s.skuReqs.forEach(r => { skuNames[r.sku_id] = r.name }))
+          return (
+            <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
+              <div className="text-[var(--text-muted)] text-xs mb-2">Stock in hand · allocated to schedule</div>
+              {Object.entries(availableStock).map(([skuId, total]) => {
+                // Sum only the rationied quantities (after stock capping)
+                const allocated = Math.min(total,
+                  dueStores.reduce((n, s) => n + (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0), 0)
+                  + pickupDue.reduce((n, s) => n + (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0), 0)
+                )
+                const remaining = total - allocated
+                return (
+                  <div key={skuId} className="flex justify-between text-sm py-1 border-t border-[var(--bg-input)]/30 first:border-0">
+                    <span className="text-[var(--text-secondary)]">{skuNames[skuId] || 'Unknown'}</span>
+                    <div className="text-[var(--text-muted2)] text-xs text-right">
+                      <div>{allocated}/{total} allocated · <span className={remaining === 0 ? 'text-[var(--accent)]' : remaining < 0 ? 'text-red-400' : 'text-[var(--text-muted)]'}>{remaining} left</span></div>
+                      {(spareStock[skuId] || 0) > 0 && (() => {
+                        const spareUsed = dueStores.reduce((n, s) => {
+                          const key = `${s.store_id}-${skuId}`
+                          const base = s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0
+                          const override = qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : base
+                          return n + Math.max(0, override - base)
+                        }, 0)
+                        const spareTotal = spareStock[skuId] || 0
+                        const spareLeft = spareTotal - spareUsed
+                        return <div className={spareUsed > spareTotal ? 'text-red-400' : 'text-[var(--text-gold)]'}>{spareUsed}/{spareTotal} spare · {spareLeft} left</div>
+                      })()}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })()}
 
         {!loading && pickupDue.length > 0 && (
           <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--text-gold)]/30 rounded-2xl p-4">
@@ -437,26 +703,7 @@ export default function WeekPlanScreen() {
                 </div>
               ))}
             </div>
-            {showPickupDetail && (
-              <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col"
-                onClick={() => setShowPickupDetail(false)}>
-                <div onClick={e => e.stopPropagation()}
-                  className="m-4 mt-16 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[70vh] overflow-y-auto shadow-2xl">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-[var(--text-primary)] text-sm font-semibold">Collecting from depot</span>
-                    <button onClick={() => setShowPickupDetail(false)} className="text-[var(--text-muted)]">✕</button>
-                  </div>
-                  {pickupDue.map(s => (
-                    <div key={s.store_id} className="py-2 border-t border-[var(--bg-input)]/40">
-                      <div className="text-[var(--text-secondary)] text-sm">{s.name}</div>
-                      <div className="text-[var(--text-muted2)] text-xs mt-0.5">
-                        {s.skuReqs.map(r => `${r.name}: ${r.qty} pcs`).join(' · ')}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+
           </div>
         )}
         {!loading && Array.from({ length: NUM_DAYS }).map((_, day) => {
@@ -477,29 +724,60 @@ export default function WeekPlanScreen() {
               {stops.length === 0 && <div className="text-[var(--text-faint)] text-xs pl-1">No stops</div>}
               <div className="flex flex-col gap-2">
                 {stops.map(s => (
-                  <div key={s.store_id} className="bg-[var(--bg-card)] rounded-xl p-3 flex items-center gap-3">
-                    <button onClick={() => toggleLock(s.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
-                      {locked[s.store_id] ? <Lock size={14} className="text-[var(--text-gold)]" /> : <Unlock size={14} />}
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[var(--text-primary)] text-sm truncate">{s.name}</div>
-                      <div className="text-[var(--text-muted2)] text-xs">
-                        {s.skuReqs.map(r => `${r.name}: ${r.qty}`).join(' · ')}
-                        {' · due '}{s.due_date}
-                      </div>
+                  <div key={s.store_id} className="bg-[var(--bg-card)] rounded-xl p-3">
+                    {/* Row 1: lock + name + day picker */}
+                    <div className="flex items-center gap-2 mb-1">
+                      <button onClick={() => toggleLock(s.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
+                        {locked[s.store_id] ? <Lock size={14} className="text-[var(--text-gold)]" /> : <Unlock size={14} />}
+                      </button>
+                      <span className="text-[var(--text-primary)] text-sm font-medium flex-1 min-w-0 overflow-hidden whitespace-nowrap text-ellipsis">{s.name}</span>
+                      <select
+                        value={assignment[s.store_id] ?? 0}
+                        onChange={e => moveStore(s.store_id, Number(e.target.value))}
+                        disabled={locked[s.store_id]}
+                        className="bg-[var(--bg-input)] text-[var(--text-primary)] text-xs rounded-lg px-2 py-1 outline-none disabled:opacity-40 shrink-0"
+                      >
+                        {moveImpact(s).map(({ day: d, cost, current, late }) => (
+                          <option key={d} value={d}>
+                            {dayLabel(planDates[d] || dateForOffset(d), { short: true })}{current ? '' : ` +${cost}m`}{late ? ' ⚠' : ''}
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                    <select
-                      value={assignment[s.store_id] ?? 0}
-                      onChange={e => moveStore(s.store_id, Number(e.target.value))}
-                      disabled={locked[s.store_id]}
-                      className="bg-[var(--bg-input)] text-[var(--text-primary)] text-xs rounded-lg px-2 py-1.5 outline-none disabled:opacity-40 shrink-0"
-                    >
-                      {moveImpact(s).map(({ day: d, cost, current, late }) => (
-                        <option key={d} value={d}>
-                          {dayLabel(planDates[d] || dateForOffset(d), { short: true })}{current ? '' : ` +${cost}m`}{late ? ' ⚠' : ''}
-                        </option>
-                      ))}
-                    </select>
+                    {/* Row 2: sku info */}
+                    <div className="text-[var(--text-muted2)] text-xs ml-5 mb-1">
+                      {s.skuReqs.map(r => {
+                        const key = `${s.store_id}-${r.sku_id}`
+                        const qty = qtyOverrides[key] !== undefined ? qtyOverrides[key] : r.qty
+                        const short = r.requested && qty < r.requested
+                        return `${r.name}: ${qty}${short ? ` ↓${r.requested}` : ''}`
+                      }).join(' · ')}
+                      {s.skuReqs.some(r => {
+                        const key = `${s.store_id}-${r.sku_id}`
+                        const qty = qtyOverrides[key] !== undefined ? qtyOverrides[key] : r.qty
+                        return r.requested && qty < r.requested
+                      }) && <span className="text-[var(--text-gold)]"> · short</span>}
+                      {' · due '}{s.due_date}
+                    </div>
+                    {/* Row 3: qty steppers */}
+                    {s.skuReqs.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 ml-5">
+                        {s.skuReqs.map(r => {
+                          const key = `${s.store_id}-${r.sku_id}`
+                          const qty = qtyOverrides[key] !== undefined ? qtyOverrides[key] : r.qty
+                          return (
+                            <div key={r.sku_id} className="flex items-center gap-1 bg-[var(--bg-input)]/40 rounded-lg px-1.5 py-0.5">
+                              <span className="text-[var(--text-muted2)] text-[10px]">{r.name.split('/')[0].trim()}</span>
+                              <button onClick={() => setQtyOverrides(o => ({ ...o, [key]: Math.max(0, qty - 1) }))}
+                                className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] w-4 h-4 flex items-center justify-center">−</button>
+                              <span className={`text-xs font-medium w-5 text-center ${qty === 0 ? 'text-[var(--text-muted2)]' : 'text-[var(--text-primary)]'}`}>{qty}</span>
+                              <button onClick={() => setQtyOverrides(o => ({ ...o, [key]: qty + 1 }))}
+                                className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] w-4 h-4 flex items-center justify-center">+</button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -518,6 +796,313 @@ export default function WeekPlanScreen() {
             {saved ? <><CheckCircle size={18} /> Week plan saved!</> : saving ? <><Loader2 size={16} className="animate-spin" /> Saving...</> : 'Save Week Plan'}
           </button>
         </div>
+      )}
+    {showProductionConfirm && pendingProduction && createPortal(
+        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col items-center justify-center p-6"
+          onClick={() => setShowProductionConfirm(false)}>
+          <div onClick={e => e.stopPropagation()}
+            className="bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+            <div className="text-[var(--text-primary)] text-base font-semibold mb-1">Confirm production</div>
+            <div className="text-[var(--text-muted2)] text-xs mb-4">Enter the actual quantities produced for {pendingProduction.date}.</div>
+            <div className="flex flex-col gap-3 mb-5">
+              {pendingProduction.totals.map(t => (
+                <div key={t.sku_name} className="flex items-center justify-between gap-3">
+                  <span className="text-[var(--text-secondary)] text-sm">{t.sku_name}</span>
+                  <div className="flex items-center gap-2 bg-[var(--bg-input)]/40 rounded-xl px-3 py-1.5">
+                    <button onClick={() => setProdQtys(q => ({ ...q, [t.sku_name]: Math.max(0, (q[t.sku_name] ?? t.qty) - 1) }))}
+                      className="text-[var(--text-muted2)] hover:text-white w-5 h-5 flex items-center justify-center">−</button>
+                    <span className="text-[var(--text-primary)] font-semibold w-8 text-center text-sm">
+                      {prodQtys[t.sku_name] ?? t.qty}
+                    </span>
+                    <button onClick={() => setProdQtys(q => ({ ...q, [t.sku_name]: (q[t.sku_name] ?? t.qty) + 1 }))}
+                      className="text-[var(--text-muted2)] hover:text-white w-5 h-5 flex items-center justify-center">+</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => {
+                  sessionStorage.removeItem('prosa_production_prefill')
+                  setPendingProduction(null)
+                  setShowProductionConfirm(false)
+                }}
+                className="flex-1 py-2.5 rounded-xl border border-[var(--bg-input)] text-[var(--text-secondary)] text-sm">
+                Dismiss
+              </button>
+              <button onClick={async () => {
+                  const { data: { user } } = await supabase.auth.getUser()
+                  const today = pendingProduction.date
+                  const rows = pendingProduction.totals.map(t => ({
+                    produced_on: today,
+                    expires_on: (() => { const d = new Date(today); d.setDate(d.getDate() + (t.shelf_days || 7)); return d.toISOString().slice(0,10) })(),
+                    sku_id: t.sku_id,
+                    qty: prodQtys[t.sku_name] ?? t.qty,
+                    user_id: user.id,
+                  }))
+                  await supabase.from('production_batches').insert(rows)
+                  sessionStorage.removeItem('prosa_production_prefill')
+                  setPendingProduction(null)
+                  setShowProductionConfirm(false)
+                  window.dispatchEvent(new CustomEvent('prosa:production_confirmed'))
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-[var(--text-gold)] text-white text-sm font-semibold">
+                Save batch
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+    {showSkipped && createPortal(
+        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col"
+          onClick={() => setShowSkipped(false)}>
+          <div onClick={e => e.stopPropagation()}
+            className="m-4 mt-16 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[75vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[var(--text-primary)] text-sm font-semibold">Stores not scheduled</span>
+              <button onClick={() => setShowSkipped(false)} className="text-[var(--text-muted)]">✕</button>
+            </div>
+            <p className="text-[var(--text-muted2)] text-xs mb-3">Due but not in today's schedule. Tap + Add to slot them into a day.</p>
+            {unscheduled.map(s => (
+              <div key={s.store_id} className="py-3 border-t border-[var(--bg-input)]/40">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[var(--text-primary)] text-sm font-medium">{s.name}</div>
+                    <div className="text-[var(--text-muted2)] text-xs mt-0.5">
+                      {s.skuReqs.map(r => `${r.name}: ${r.qty}`).join(' · ')} · due {s.due_date}
+                    </div>
+                    <div className="text-[var(--text-gold)] text-xs mt-1">{s.skipReason}</div>
+                  </div>
+                  <div className="shrink-0">
+                    <select defaultValue=""
+                      onChange={e => {
+                        const day = Number(e.target.value)
+                        if (isNaN(day) || e.target.value === '') return
+                        const storeToAdd = { ...s, skuReqs: s.skuReqs.map(r => ({ ...r, requested: r.requested ?? r.qty })) }
+                        setDueStores(prev => [...prev, storeToAdd])
+                        setAssignment(a => ({ ...a, [s.store_id]: day }))
+                        setUnscheduled(prev => prev.filter(x => x.store_id !== s.store_id))
+                        setShowSkipped(false)
+                      }}
+                      className="bg-[var(--accent)] text-white text-xs rounded-xl px-3 py-2 outline-none cursor-pointer">
+                      <option value="">+ Add to day</option>
+                      {Array.from({ length: NUM_DAYS }).map((_, d) => (
+                        <option key={d} value={d}>
+                          {dayLabel(planDates[d] || dateForOffset(d), { short: true })}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>,
+        document.body
+      )}
+
+    {showAddStore && createPortal(
+        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col justify-end pb-20"
+          onClick={() => setShowAddStore(false)}>
+          <div onClick={e => e.stopPropagation()}
+            className="bg-[var(--bg-card)] border-t border-[var(--bg-input)]/60 rounded-t-2xl w-full shadow-2xl flex flex-col" style={{maxHeight:'80dvh'}}>
+            <div className="px-4 py-3 border-b border-[var(--bg-input)]/40 flex items-center justify-between shrink-0">
+              <span className="text-[var(--text-primary)] text-sm font-semibold">Add store to schedule</span>
+              <button onClick={() => setShowAddStore(false)} className="text-[var(--text-muted)]">✕</button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-4">
+              {(() => {
+                const selectedStore = unscheduled.find(s => s.store_id === addStoreQtys['_selected'])
+                  || dueStores.find(s => s.store_id === addStoreQtys['_selected'])
+
+                if (!selectedStore) {
+                  // Step 1: Search and pick a store
+                  const candidates = unscheduled.filter(s =>
+                    !addStoreQuery.trim() || s.name.toLowerCase().includes(addStoreQuery.toLowerCase())
+                  )
+                  return (
+                    <>
+                      <input autoFocus value={addStoreQuery} onChange={e => setAddStoreQuery(e.target.value)}
+                        placeholder="Search store..."
+                        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-3" />
+                      {candidates.length === 0 && <p className="text-[var(--text-muted2)] text-xs text-center mt-4">No skipped stores match. These are stores due but not yet scheduled.</p>}
+                      {candidates.map(s => (
+                        <button key={s.store_id} onClick={() => setAddStoreQtys(q => ({ '_selected': s.store_id }))}
+                          className="w-full text-left bg-[var(--bg-input)]/40 hover:bg-[var(--bg-input)] rounded-xl px-4 py-3 mb-2 transition-colors">
+                          <div className="text-[var(--text-primary)] text-sm font-medium">{s.name}</div>
+                          <div className="text-[var(--text-muted2)] text-xs mt-0.5">{s.skipReason} · due {s.due_date}</div>
+                        </button>
+                      ))}
+                    </>
+                  )
+                }
+
+                // Step 2: Store selected
+                const skuMap = {}
+                selectedStore.skuReqs.forEach(r => { skuMap[r.sku_id] = r.name })
+                Object.keys({ ...availableStock, ...spareStock }).forEach(id => {
+                  if (!skuMap[id]) {
+                    const found = dueStores.flatMap(s => s.skuReqs).find(r => r.sku_id === id)
+                    if (found) skuMap[id] = found.name
+                  }
+                })
+                const addedKeys = Object.keys(addStoreQtys).filter(k => k.startsWith('sku-'))
+                const addedSkuIds = addedKeys.map(k => k.replace('sku-', ''))
+                const remainingSkuIds = Object.keys(skuMap).filter(id => !addedSkuIds.includes(id))
+
+                return (
+                  <>
+                    <button onClick={() => setAddStoreQtys({})} className="text-[var(--accent)] text-xs mb-3">← Back</button>
+                    <div className="text-[var(--text-primary)] text-base font-semibold mb-4">{selectedStore.name}</div>
+
+                    {/* Added SKU lines */}
+                    {addedKeys.map(key => {
+                      const skuId = key.replace('sku-', '')
+                      const unalloc = Math.max(0, (availableStock[skuId] || 0) - dueStores.reduce((n, s2) => {
+                        const k2 = `${s2.store_id}-${skuId}`
+                        return n + (qtyOverrides[k2] !== undefined ? Number(qtyOverrides[k2]) : (s2.skuReqs.find(r2 => r2.sku_id === skuId)?.qty || 0))
+                      }, 0))
+                      const spare = spareStock[skuId] || 0
+                      const maxQty = unalloc + spare
+                      return (
+                        <div key={key} className="bg-[var(--bg-input)]/40 rounded-xl p-3 mb-2">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[var(--text-secondary)] text-sm font-medium">{skuMap[skuId]}</span>
+                            <button onClick={() => setAddStoreQtys(q => { const n = {...q}; delete n[key]; return n })}
+                              className="text-[var(--text-muted2)] hover:text-red-400 text-xs">✕</button>
+                          </div>
+                          <div className="flex gap-3 text-xs text-[var(--text-muted2)] mb-2">
+                            <span>Allocated: <span className="text-[var(--text-secondary)]">{unalloc} pcs</span></span>
+                            {spare > 0 && <span>Spare: <span className="text-[var(--text-gold)]">{spare} pcs</span></span>}
+                          </div>
+                          {maxQty > 0 ? (
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => setAddStoreQtys(q => ({ ...q, [key]: Math.max(0, (Number(q[key]) || 0) - 1) }))}
+                                className="w-9 h-9 rounded-xl bg-[var(--bg-input)] text-[var(--text-primary)] text-lg font-bold flex items-center justify-center hover:bg-[var(--accent)] hover:text-white transition-colors">−</button>
+                              <span className="flex-1 text-center text-[var(--text-primary)] text-base font-semibold">
+                                {addStoreQtys[key] || 0}
+                              </span>
+                              <button onClick={() => setAddStoreQtys(q => ({ ...q, [key]: Math.min(maxQty, (Number(q[key]) || 0) + 1) }))}
+                                className="w-9 h-9 rounded-xl bg-[var(--bg-input)] text-[var(--text-primary)] text-lg font-bold flex items-center justify-center hover:bg-[var(--accent)] hover:text-white transition-colors">+</button>
+                            </div>
+                          ) : (
+                            <p className="text-[var(--text-muted2)] text-xs italic">No stock — visit only</p>
+                          )}
+                        </div>
+                      )
+                    })}
+
+                    {/* Add SKU button */}
+                    {remainingSkuIds.length > 0 && (
+                      <div className="mb-4">
+                        {addStoreQtys['_picking'] ? (
+                          <div className="bg-[var(--bg-input)]/40 rounded-xl overflow-hidden">
+                            {remainingSkuIds.map(id => {
+                              const avail = Math.max(0, (availableStock[id] || 0) - dueStores.reduce((n, s2) => {
+                                const k2 = `${s2.store_id}-${id}`
+                                return n + (qtyOverrides[k2] !== undefined ? Number(qtyOverrides[k2]) : (s2.skuReqs.find(r2 => r2.sku_id === id)?.qty || 0))
+                              }, 0)) + (spareStock[id] || 0)
+                              return (
+                                <button key={id} onClick={() => setAddStoreQtys(q => { const n = {...q}; delete n['_picking']; return {...n, [`sku-${id}`]: ''} })}
+                                  className="w-full flex items-center justify-between px-4 py-3 border-b border-[var(--bg-input)]/40 last:border-0 text-left hover:bg-[var(--bg-input)]/60 transition-colors">
+                                  <span className="text-[var(--text-primary)] text-sm">{skuMap[id]}</span>
+                                  <span className="text-[var(--text-muted2)] text-xs">{avail > 0 ? `${avail} pcs` : 'no stock'}</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        ) : (
+                          <button onClick={() => setAddStoreQtys(q => ({ ...q, '_picking': true }))}
+                            className="w-full py-2.5 rounded-xl border border-dashed border-[var(--bg-input)] text-[var(--text-muted2)] text-sm hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors">
+                            + Add product
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Day picker */}
+                    <div className="mb-4">
+                      <label className="text-[var(--text-muted)] text-xs mb-2 block">Add to day</label>
+                      <div className="flex flex-wrap gap-2">
+                        {Array.from({ length: NUM_DAYS }).map((_, d) => {
+                          const selected = (addStoreQtys['_day'] ?? 0) === d
+                          return (
+                            <button key={d} onClick={() => setAddStoreQtys(q => ({ ...q, '_day': d }))}
+                              className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-colors ${selected ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-input)] text-[var(--text-secondary)]'}`}>
+                              {dayLabel(planDates[d] || dateForOffset(d), { short: true })}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    <button onClick={async () => {
+                      const day = addStoreQtys['_day'] ?? 0
+                      const newOverrides = {}
+                      // Build skuReqs: start from forecast, then add any SKUs picked in the modal
+                      const existingSkuIds = new Set(selectedStore.skuReqs.map(r => r.sku_id))
+                      const extraSkuReqs = addedKeys
+                        .map(key => key.replace('sku-', ''))
+                        .filter(skuId => !existingSkuIds.has(skuId))
+                        .map(skuId => ({ sku_id: skuId, name: skuMap[skuId] || skuId, qty: 0, requested: 0 }))
+                      const storeToAdd = {
+                        ...selectedStore,
+                        skuReqs: [
+                          ...selectedStore.skuReqs.map(r => ({ ...r, qty: 0, requested: 0 })),
+                          ...extraSkuReqs
+                        ]
+                      }
+                      addedKeys.forEach(key => {
+                        const skuId = key.replace('sku-', '')
+                        const val = addStoreQtys[key]
+                        if (val !== undefined && val !== '' && Number(val) > 0)
+                          newOverrides[`${selectedStore.store_id}-${skuId}`] = Number(val)
+                      })
+                      const nextOverrides = { ...qtyOverrides, ...newOverrides }
+                      const nextDueStores = [...dueStores, storeToAdd]
+                      const nextAssignment = { ...assignment, [selectedStore.store_id]: day }
+                      setQtyOverrides(nextOverrides)
+                      setDueStores(nextDueStores)
+                      setAssignment(nextAssignment)
+                      setUnscheduled(prev => prev.filter(x => x.store_id !== selectedStore.store_id))
+                      setShowAddStore(false)
+                      setAddStoreQtys({})
+                      // persist immediately so page refresh doesn't lose the stop
+                      await saveWeekPlan(nextDueStores, nextAssignment, nextOverrides)
+                    }}
+                      className="w-full py-3 rounded-xl bg-[var(--accent)] text-white text-sm font-semibold">
+                      {addedKeys.some(k => Number(addStoreQtys[k]) > 0) ? 'Confirm delivery' : 'Add as visit only'}
+                    </button>
+                  </>
+                )
+              })()}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+    {showPickupDetail && createPortal(
+        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col"
+          onClick={() => setShowPickupDetail(false)}>
+          <div onClick={e => e.stopPropagation()}
+            className="m-4 mt-16 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[70vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[var(--text-primary)] text-sm font-semibold">Collecting from depot</span>
+              <button onClick={() => setShowPickupDetail(false)} className="text-[var(--text-muted)]">✕</button>
+            </div>
+            {pickupDue.map(s => (
+              <div key={s.store_id} className="py-2 border-t border-[var(--bg-input)]/40">
+                <div className="text-[var(--text-secondary)] text-sm">{s.name}</div>
+                <div className="text-[var(--text-muted2)] text-xs mt-0.5">
+                  {s.skuReqs.map(r => `${r.name}: ${r.qty} pcs`).join(' · ')}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   )

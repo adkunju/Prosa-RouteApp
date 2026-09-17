@@ -18,7 +18,7 @@ function formatEta(minutesFromStart) {
   return `${h12}:${m.toString().padStart(2, '0')} ${ampm}`
 }
 
-function nnRoute(depotId, storeIds, cost) {
+function nnRoute(depotId, storeIds, cost, closeLoop = true) {
   const remaining = new Set(storeIds)
   const route = []
   let current = depotId
@@ -35,24 +35,24 @@ function nnRoute(depotId, storeIds, cost) {
   return route
 }
 
-function routeCost(depotId, route, cost) {
+function routeCost(depotId, route, cost, closeLoop = true) {
   let total = 0
   let prev = depotId
   for (const id of route) { total += cost(prev, id); prev = id }
-  total += cost(prev, depotId)
+  if (closeLoop) total += cost(prev, depotId)
   return total
 }
 
-function twoOpt(depotId, route, cost) {
+function twoOpt(depotId, route, cost, closeLoop = true) {
   let improved = true
   let best = [...route]
-  let bestCost = routeCost(depotId, best, cost)
+  let bestCost = routeCost(depotId, best, cost, closeLoop)
   while (improved) {
     improved = false
     for (let i = 0; i < best.length - 1; i++) {
       for (let j = i + 1; j < best.length; j++) {
         const candidate = [...best.slice(0, i), ...best.slice(i, j + 1).reverse(), ...best.slice(j + 1)]
-        const candidateCost = routeCost(depotId, candidate, cost)
+        const candidateCost = routeCost(depotId, candidate, cost, closeLoop)
         if (candidateCost < bestCost - 0.0001) {
           best = candidate
           bestCost = candidateCost
@@ -64,15 +64,25 @@ function twoOpt(depotId, route, cost) {
   return { route: best, cost: bestCost }
 }
 
-function buildSequence(depotId, stopsInfo, cost) {
+const LIVE_ID = '__live__'
+
+function haversineSec(lat1, lng1, lat2, lng2) {
+  const R = 6371000, toRad = x => x * Math.PI / 180
+  const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1)
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLng/2)**2
+  const straightM = 2 * R * Math.asin(Math.sqrt(a))
+  return (straightM * 1.4) / 6.94 // road factor 1.4x, Kerala avg ~25 km/h
+}
+
+function buildSequence(depotId, stopsInfo, cost, closeLoop = true) {
   const lockedStops = stopsInfo.filter(s => s.locked)
   const unlockedStops = stopsInfo.filter(s => !s.locked)
   const unlockedIds = unlockedStops.map(s => s.store_id)
 
   let orderedUnlocked = []
   if (unlockedIds.length > 0) {
-    const seed = nnRoute(depotId, unlockedIds, cost)
-    orderedUnlocked = twoOpt(depotId, seed, cost).route
+    const seed = nnRoute(depotId, unlockedIds, cost, closeLoop)
+    orderedUnlocked = twoOpt(depotId, seed, cost, closeLoop).route
   }
 
   const finalOrder = new Array(stopsInfo.length).fill(null)
@@ -85,7 +95,7 @@ function buildSequence(depotId, stopsInfo, cost) {
   return finalOrder
 }
 
-function buildMapsLinks(depot, orderedStoreObjs) {
+function buildMapsLinks(origin, orderedStoreObjs) {
   const points = orderedStoreObjs.filter(s => s.lat && s.lng)
   if (points.length === 0) return []
   const chunks = []
@@ -93,13 +103,13 @@ function buildMapsLinks(depot, orderedStoreObjs) {
     chunks.push(points.slice(i, i + MAPS_CHUNK_SIZE))
   }
   return chunks.map((chunk, idx) => {
-    const origin = idx === 0 ? `${depot.lat},${depot.lng}` : `${chunks[idx - 1].slice(-1)[0].lat},${chunks[idx - 1].slice(-1)[0].lng}`
+    const chunkOrigin = idx === 0 ? `${origin.lat},${origin.lng}` : `${chunks[idx - 1].slice(-1)[0].lat},${chunks[idx - 1].slice(-1)[0].lng}`
     const isLast = idx === chunks.length - 1
     const destinationStop = chunk[chunk.length - 1]
-    const destination = isLast ? `${depot.lat},${depot.lng}` : `${destinationStop.lat},${destinationStop.lng}`
+    const destination = isLast ? `${origin.lat},${origin.lng}` : `${destinationStop.lat},${destinationStop.lng}`
     const waypointStops = isLast ? chunk : chunk.slice(0, -1)
     const waypoints = waypointStops.map(s => `${s.lat},${s.lng}`).join('|')
-    const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypoints ? `&waypoints=${waypoints}` : ''}&travelmode=driving`
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${chunkOrigin}&destination=${destination}${waypoints ? `&waypoints=${waypoints}` : ''}&travelmode=driving`
     return { label: chunks.length > 1 ? `Leg ${idx + 1} (stops ${idx * MAPS_CHUNK_SIZE + 1}-${idx * MAPS_CHUNK_SIZE + chunk.length})` : 'Open in Google Maps', url }
   })
 }
@@ -211,7 +221,7 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
   if (preview) {
     const fc = forecast[preview.id]
     const { pos, addedMin } = getBestPos(preview.id)
-    const afterStop = stops[pos - 1]?.stores?.name || 'Depot'
+    const afterStop = (pos > 0 && stops[pos - 1]?.stores?.name) ? stops[pos - 1].stores.name : 'Depot'
     return (
       <div className="flex flex-col gap-3">
         <div className="bg-[var(--bg-card)]/80 border border-[var(--accent)]/30 rounded-xl p-4">
@@ -318,14 +328,18 @@ export default function PlanViewScreen() {
   const [allSkus, setAllSkus] = useState([])
   const [extraReqs, setExtraReqs] = useState([])     // impulse-added SKUs
   const [addSkuOpen, setAddSkuOpen] = useState(false)
+  const [showHistoryFor, setShowHistoryFor] = useState(null) // sku_id
   const [locked, setLocked] = useState({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [completedStopIds, setCompletedStopIds] = useState(new Set())
+  const [skippedStopIds, setSkippedStopIds] = useState(new Set())
   const [activeCompleteStop, setActiveCompleteStop] = useState(null)
   const [completeForm, setCompleteForm] = useState({})
   const [completing, setCompleting] = useState(false)
   const [batches, setBatches] = useState([])
+  const [useLiveOrigin, setUseLiveOrigin] = useState(false)
+  const [liveCoords, setLiveCoords] = useState(null)
 
   async function loadDates() {
     // Only plans that have stops, sorted oldest-first so the dropdown reads
@@ -391,11 +405,19 @@ export default function PlanViewScreen() {
     setLocked(lockMap)
     setOrder(withReqs.map(s => s.store_id))
 
-    // Check which stops already have delivery_lines (completed)
+    // Check which stops are completed — via plan_stop_id OR quick delivery (store+date)
     const stopIds = withReqs.map(s => s.id)
+    const storeIds = withReqs.map(s => s.store_id)
     if (stopIds.length > 0) {
-      const { data: existingDL } = await supabase.from('delivery_lines').select('plan_stop_id').in('plan_stop_id', stopIds)
-      setCompletedStopIds(new Set((existingDL || []).map(d => d.plan_stop_id)))
+      const [{ data: existingDL }, { data: quickDL }] = await Promise.all([
+        supabase.from('delivery_lines').select('plan_stop_id').in('plan_stop_id', stopIds),
+        supabase.from('delivery_lines').select('store_id').in('store_id', storeIds).eq('delivered_on', date),
+      ])
+      const completedByPlan = new Set((existingDL || []).map(d => d.plan_stop_id))
+      const deliveredStoreIds = new Set((quickDL || []).map(d => d.store_id))
+      setCompletedStopIds(new Set(
+        withReqs.filter(s => completedByPlan.has(s.id) || deliveredStoreIds.has(s.store_id)).map(s => s.id)
+      ))
     } else {
       setCompletedStopIds(new Set())
     }
@@ -418,12 +440,44 @@ export default function PlanViewScreen() {
     return map[`${a}_${b}`] ?? map[`${b}_${a}`] ?? 99999
   }
 
-  function optimize(useMetric) {
+  function optimize(useMetric, liveCoordsOverride, forceLive) {
     if (!depot?.id || stops.length === 0) return
+    const live = liveCoordsOverride || liveCoords
+    const shouldUseLive = forceLive !== undefined ? forceLive : useLiveOrigin
+    const originId = shouldUseLive && live ? LIVE_ID : depot.id
     const inputStops = stops.map((s, idx) => ({ store_id: s.store_id, locked: !!locked[s.store_id], origIndex: idx }))
-    const newOrder = buildSequence(depot.id, inputStops, (a, b) => cost(a, b, useMetric))
+    const costFn = (a, b) => {
+      if (a === LIVE_ID || b === LIVE_ID) {
+        const storeId = a === LIVE_ID ? b : a
+        const sc = storeCoords[storeId]
+        if (!sc || !live) return 99999
+        return haversineSec(live.lat, live.lng, sc.lat, sc.lng)
+      }
+      return cost(a, b, useMetric)
+    }
+    const closeLoop = originId !== LIVE_ID
+    const newOrder = buildSequence(originId, inputStops, costFn, closeLoop)
     setOrder(newOrder)
     setMetric(useMetric)
+  }
+
+  function toggleLiveOrigin() {
+    const next = !useLiveOrigin
+    setUseLiveOrigin(next)
+    if (next) {
+      navigator.geolocation?.getCurrentPosition(
+        pos => {
+          const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+          setLiveCoords(coords)
+          optimize(metric, coords, true)
+        },
+        () => { setUseLiveOrigin(false); alert('Could not get your location.') },
+        { enableHighAccuracy: true, timeout: 8000 }
+      )
+    } else {
+      setLiveCoords(null)
+      optimize(metric, null, false)
+    }
   }
 
   async function saveOrder() {
@@ -437,6 +491,15 @@ export default function PlanViewScreen() {
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
+  }
+
+  function toggleSkip(stopId) {
+    setSkippedStopIds(s => {
+      const n = new Set(s)
+      if (n.has(stopId)) n.delete(stopId)
+      else n.add(stopId)
+      return n
+    })
   }
 
   function toggleLock(storeId) {
@@ -456,6 +519,9 @@ export default function PlanViewScreen() {
         qty_returned: '',
         return_line_id: '',
         batch_id: skuBatches[0]?.id || '',
+        unit_price: '',
+        is_offer: false,
+        store_balance: '',
       }
     })
     setCompleteForm(initial)
@@ -463,14 +529,34 @@ export default function PlanViewScreen() {
     setAddSkuOpen(false)
     setActiveCompleteStop(stop)
 
-    const [{ data: skus }, { data: prior }] = await Promise.all([
-      supabase.from('skus').select('id, name').order('name'),
+    const [{ data: skus }, { data: prior }, { data: storePrices }, { data: lastPrices }] = await Promise.all([
+      supabase.from('skus').select('id, name, unit_price').order('name'),
       supabase.from('delivery_lines')
-        .select('id, sku_id, qty_delivered, delivered_on, production_batches(produced_on), returns(qty_returned), plan_stops!inner(store_id)')
+        .select('id, sku_id, qty_delivered, delivered_on, unit_price, is_offer, production_batches(produced_on), returns(qty_returned), plan_stops!inner(store_id)')
         .eq('plan_stops.store_id', stop.store_id)
         .order('delivered_on', { ascending: false })
         .limit(80),
+      supabase.from('store_sku_price_latest').select('sku_id, price').eq('store_id', stop.store_id),
+      supabase.from('delivery_lines')
+        .select('sku_id, unit_price')
+        .eq('store_id', stop.store_id)
+        .not('unit_price', 'is', null)
+        .order('delivered_on', { ascending: false })
+        .limit(20),
     ])
+    const storePriceMap = {}
+    ;(storePrices || []).forEach(p => { storePriceMap[p.sku_id] = p.price })
+    const lastPriceMap = {}
+    ;(lastPrices || []).forEach(l => { if (!lastPriceMap[l.sku_id]) lastPriceMap[l.sku_id] = l.unit_price })
+    // Back-fill prices into form
+    setCompleteForm(f => {
+      const updated = { ...f }
+      Object.keys(updated).forEach(skuId => {
+        const skuData = (skus || []).find(s => s.id === skuId)
+        updated[skuId] = { ...updated[skuId], unit_price: lastPriceMap[skuId] ?? storePriceMap[skuId] ?? skuData?.unit_price ?? '' }
+      })
+      return updated
+    })
     setAllSkus(skus || [])
 
     const grouped = {}
@@ -483,6 +569,8 @@ export default function PlanViewScreen() {
         produced_on: l.production_batches?.produced_on || null,
         qty_delivered: l.qty_delivered,
         already_returned: already,
+        unit_price: l.unit_price || null,
+        is_offer: l.is_offer || false,
       })
     })
     setPriorLines(grouped)
@@ -574,6 +662,10 @@ export default function PlanViewScreen() {
         batch_id: line.batch_id || null,
         qty_delivered: Number(line.qty_delivered) || 0,
         delivered_on: dateStr,
+        store_id: activeCompleteStop.store_id,
+        unit_price: line.unit_price !== '' ? Number(line.unit_price) : null,
+        is_offer: line.is_offer || false,
+        store_balance: line.store_balance !== '' && line.store_balance !== undefined ? Number(line.store_balance) : null,
       })
       // Returns belong to the EARLIER delivery that carried the stock,
       // never to the line we just created.
@@ -663,8 +755,11 @@ export default function PlanViewScreen() {
     })
   })
 
-  const orderedStoreObjs = orderedStops.map(s => ({ id: s.store_id, ...storeCoords[s.store_id] }))
-  const mapsLinks = depot ? buildMapsLinks(depot, orderedStoreObjs) : []
+  const orderedStoreObjs = orderedStops
+    .filter(s => !skippedStopIds.has(s.id))
+    .map(s => ({ id: s.store_id, ...storeCoords[s.store_id] }))
+  const mapsOrigin = (useLiveOrigin && liveCoords) ? liveCoords : (depot ? { lat: depot.lat, lng: depot.lng } : null)
+  const mapsLinks = mapsOrigin ? buildMapsLinks(mapsOrigin, orderedStoreObjs) : []
   const completedCount = orderedStops.filter(s => completedStopIds.has(s.id)).length
 
   return (
@@ -730,9 +825,16 @@ export default function PlanViewScreen() {
           </div>
         )}
         {orderedStops.length > 0 && (
-          <div className="bg-[var(--bg-card)]/60 rounded-xl p-3 text-[var(--text-muted)] text-xs flex items-center gap-2">
-            <span className="text-[var(--text-gold)]">●</span> Start: Depot (9:00 AM)
-          </div>
+          <button onClick={toggleLiveOrigin}
+            className="w-full bg-[var(--bg-card)]/60 rounded-xl p-3 text-xs flex items-center gap-2 hover:bg-[var(--bg-input)]/60 transition-colors">
+            <span className={useLiveOrigin ? 'text-[var(--accent)]' : 'text-[var(--text-gold)]'}>●</span>
+            <span className="text-[var(--text-muted)] flex-1 text-left">
+              {useLiveOrigin ? 'Start: Live location (9:00 AM)' : 'Start: Depot (9:00 AM)'}
+            </span>
+            <span className={`px-2 py-0.5 rounded-lg font-medium ${useLiveOrigin ? 'bg-[var(--accent)]/20 text-[var(--accent)]' : 'bg-[var(--bg-input)] text-[var(--text-muted2)]'}`}>
+              {useLiveOrigin ? '📍 Live' : '🏠 Depot'} · tap to switch
+            </span>
+          </button>
         )}
         {orderedStops.map((stop, idx) => {
           const isDone = completedStopIds.has(stop.id)
@@ -745,7 +847,7 @@ export default function PlanViewScreen() {
                 if (idx < dragIdx && idx >= overIdx) return { transform: 'translateY(6px)' }
                 return undefined
               })()}
-              className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone ? 'opacity-60' : ''} ${dragIdx === idx ? 'ring-2 ring-[var(--accent)]' : 'transition-transform duration-150'} ${dragIdx !== null && dragIdx !== idx ? 'opacity-70' : ''}`}>
+              className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone || skippedStopIds.has(stop.id) ? 'opacity-50' : ''} ${dragIdx === idx ? 'ring-2 ring-[var(--accent)]' : 'transition-transform duration-150'} ${dragIdx !== null && dragIdx !== idx ? 'opacity-70' : ''}`}>
               <div className="flex items-start justify-between mb-1">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   <span onPointerDown={e => startDrag(e, idx)}
@@ -763,24 +865,39 @@ export default function PlanViewScreen() {
               <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1">
                 +{Math.round(legInfo[idx]?.legMinutes || 0)} min · {(legInfo[idx]?.legKm || 0).toFixed(1)} km from previous
               </div>
-              {(!stop.requirements || stop.requirements.length === 0) && (
-                <div className="text-[var(--text-muted2)] text-xs pl-5 italic">Visit only — no delivery planned</div>
+              {(!stop.requirements || stop.requirements.length === 0 || stop.requirements.every(r => (r.approved_qty ?? r.proposed_qty) === 0)) && (
+                <div className="text-[var(--text-muted2)] text-xs pl-5 italic">Visit only</div>
               )}
-              {stop.requirements?.map(req => {
+              {stop.requirements?.filter(r => (r.approved_qty ?? r.proposed_qty) > 0).map(req => {
                 const qty = req.approved_qty ?? req.proposed_qty
                 const moq = req.skus?.min_delivery_qty || 0
+                const dl = req.delivery_line
                 return (
                   <div key={req.id} className="text-[var(--text-muted)] text-xs flex justify-between pl-5">
-                    <span>{req.skus?.name}</span>
+                    <span className="flex items-center gap-1">
+                      {req.skus?.name}
+                      {dl?.is_offer && <span className="text-[var(--text-gold)] text-[10px] font-semibold">OFFER</span>}
+                    </span>
                     <span className="text-[var(--text-secondary)]">
                       {qty} {qty === 1 ? 'pc' : 'pcs'}
+                      {dl?.unit_price && <span className="text-[var(--text-muted2)]"> · ₹{dl.unit_price}</span>}
                       {moq > 0 && qty < moq && <span className="text-[var(--text-gold)]"> · MOQ {moq}</span>}
                     </span>
                   </div>
                 )
               })}
               <div className="pl-5 mt-2">
-                {isDone ? (
+                {skippedStopIds.has(stop.id) ? (
+                  <div className="flex items-center gap-3">
+                    <span className="flex items-center gap-1.5 text-[var(--text-muted2)] text-xs">
+                      Skipped
+                    </span>
+                    <button onClick={() => toggleSkip(stop.id)}
+                      className="text-[var(--accent)] text-xs hover:opacity-80">
+                      Undo
+                    </button>
+                  </div>
+                ) : isDone ? (
                   <span className="flex items-center gap-1.5 text-[var(--accent)] text-xs">
                     <CheckCircle size={14} /> Delivered
                   </span>
@@ -788,10 +905,16 @@ export default function PlanViewScreen() {
                   (!stop.requirements || stop.requirements.length === 0) ? (
                     <MarkVisitedForm stop={stop} onDone={() => setCompletedStopIds(s => new Set([...s, stop.id]))} />
                   ) : (
-                    <button onClick={() => openCompleteForm(stop)}
-                      className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-accent)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
-                      <ClipboardCheck size={13} /> Record delivery <ChevronRight size={12} className="opacity-70" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => openCompleteForm(stop)}
+                        className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-accent)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
+                        <ClipboardCheck size={13} /> Record delivery <ChevronRight size={12} className="opacity-70" />
+                      </button>
+                      <button onClick={() => toggleSkip(stop.id)}
+                        className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs px-2 py-1.5 rounded-lg bg-[var(--bg-input)]/40 transition-colors">
+                        Skip
+                      </button>
+                    </div>
                   )
                 )}
               </div>
@@ -829,6 +952,7 @@ export default function PlanViewScreen() {
               const line = completeForm[row.sku_id] || {}
               const needsBatch = Number(line.qty_delivered) > 0 && !line.batch_id
               const prior = priorLines[row.sku_id] || []
+              const recentHistory = prior.slice(0, 5)
               const needsReturnLine = Number(line.qty_returned) > 0 && !line.return_line_id
               const req = { sku_id: row.sku_id }
               return (
@@ -839,17 +963,23 @@ export default function PlanViewScreen() {
                   </div>
                   <div className="mb-3">
                     <label className="text-[var(--text-muted)] text-xs mb-1 block">Production batch {needsBatch && <span className="text-red-400">*</span>}</label>
-                    <select value={line.batch_id || ''}
-                      onChange={e => setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], batch_id: e.target.value } }))}
-                      className={`w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 ${needsBatch ? 'ring-2 ring-red-500' : 'focus:ring-[var(--accent)]'}`}>
-                      <option value="">Select batch...</option>
-                      {skuBatches.map(b => (
-                        <option key={b.id} value={b.id}>{b.produced_on} · expires {b.expires_on} · {Math.max(0, b.qty - (b.delivery_lines || []).reduce((n, l) => n + (l.qty_delivered || 0), 0))} pcs left</option>
-                      ))}
-                    </select>
-                    {skuBatches.length === 0 && <p className="text-[var(--text-gold)] text-xs mt-1">⚠ No active batches for this product</p>}
+                    <div className="flex flex-col gap-1.5">
+                      {skuBatches.length === 0 && <p className="text-[var(--text-gold)] text-xs">⚠ No active batches for this product</p>}
+                      {skuBatches.map(b => {
+                        const avail = Math.max(0, b.qty - (b.delivery_lines || []).reduce((n, l) => n + (l.qty_delivered || 0), 0))
+                        const selected = line.batch_id === b.id
+                        return (
+                          <button key={b.id}
+                            onClick={() => setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], batch_id: b.id } }))}
+                            className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${selected ? 'bg-[var(--accent)]/20 border border-[var(--accent)] text-[var(--accent)]' : 'bg-[var(--bg-input)] text-[var(--text-primary)] border border-transparent'}`}>
+                            <div className="font-medium">Made {b.produced_on}</div>
+                            <div className="text-xs opacity-70">Expires {b.expires_on} · {avail} pcs left</div>
+                          </button>
+                        )
+                      })}
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="text-[var(--text-muted)] text-xs mb-1 block">Delivered</label>
                       <input type="number"
@@ -865,6 +995,56 @@ export default function PlanViewScreen() {
                         className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
                     </div>
                   </div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="flex-1">
+                      <label className="text-[var(--text-muted)] text-xs mb-1 block">Price per pc (₹)</label>
+                      <input type="number" min="0" step="0.01"
+                        value={line.unit_price ?? ''}
+                        onChange={e => setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], unit_price: e.target.value } }))}
+                        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                    </div>
+                    <div className="pt-5">
+                      <button
+                        onClick={() => setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], is_offer: !f[req.sku_id]?.is_offer } }))}
+                        className={`text-xs font-semibold px-3 py-2 rounded-lg border transition-colors ${line.is_offer ? 'bg-[var(--text-gold)]/20 border-[var(--text-gold)] text-[var(--text-gold)]' : 'border-[var(--bg-input)] text-[var(--text-muted2)] hover:border-[var(--text-gold)] hover:text-[var(--text-gold)]'}`}>
+                        OFFER
+                      </button>
+                    </div>
+                  </div>
+                  {line.unit_price !== '' && Number(line.unit_price) > 0 && Number(line.qty_delivered) > 0 && (
+                    <div className="text-[var(--text-muted2)] text-xs mb-2">
+                      Billed: ₹{((Number(line.qty_delivered) - Number(line.qty_returned || 0)) * Number(line.unit_price)).toFixed(2)}
+                      {line.is_offer && <span className="ml-1 text-[var(--text-gold)]">· offer price</span>}
+                    </div>
+                  )}
+                  <div className="mt-3 border-t border-[var(--bg-input)]/30 pt-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-[var(--text-muted)] text-xs">Store balance before delivery</label>
+                      <input type="number" min="0" placeholder="pcs left at store"
+                        value={line.store_balance ?? ''}
+                        onChange={e => setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], store_balance: e.target.value } }))}
+                        className="w-28 bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-2 py-1 text-xs outline-none text-center" />
+                    </div>
+                  </div>
+                  {recentHistory.length > 0 && (
+                    <div className="mt-2 border-t border-[var(--bg-input)]/30 pt-2">
+                      <button onClick={() => setShowHistoryFor(showHistoryFor === row.sku_id ? null : row.sku_id)}
+                        className="text-[var(--text-muted2)] text-[10px] uppercase tracking-wide flex items-center gap-1 w-full">
+                        Recent deliveries {showHistoryFor === row.sku_id ? '▲' : '▼'}
+                      </button>
+                      {showHistoryFor === row.sku_id && recentHistory.map((h, i) => (
+                        <div key={i} className="flex justify-between text-xs py-1 border-t border-[var(--bg-input)]/20 first:border-0 mt-1">
+                          <span className="text-[var(--text-muted2)]">{h.delivered_on}</span>
+                          <span className="text-[var(--text-secondary)] flex items-center gap-1.5">
+                            {h.qty_delivered} pcs
+                            {h.already_returned > 0 && <span className="text-red-400">· {h.already_returned} ret</span>}
+                            {h.unit_price && <span className="text-[var(--text-muted2)]">· ₹{h.unit_price}</span>}
+                            {h.is_offer && <span className="text-[var(--text-gold)] text-[10px] font-semibold">OFFER</span>}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {Number(line.qty_returned) > 0 && (() => {
                     const res = resolveReturnLine(req.sku_id, line.return_date_text)
                     const pretty = line.return_date_text

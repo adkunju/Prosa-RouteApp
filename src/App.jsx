@@ -24,14 +24,22 @@ function PlanHub() {
   const [tab, setTab] = useState('allocation')
   useEffect(() => {
     const go = e => {
+      if (e.detail?.screen) return // handled by Shell
       if (e.detail?.tab === 'settings_production') {
-        setScreen('settings')
-        // small delay so SettingsScreen mounts before we try to set its section
-        setTimeout(() => window.dispatchEvent(new CustomEvent('prosa:settings_section', { detail: 'production' })), 100)
+        sessionStorage.setItem('prosa_settings_return', 'plan:week')
+        sessionStorage.setItem('prosa_settings_section', 'production')
+        window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { screen: 'settings' } }))
+      } else if (e.detail?.tab === 'schedule') {
+        setTab('week')
       } else if (e.detail?.tab) setTab(e.detail.tab)
     }
     window.addEventListener('prosa:goto', go)
-    return () => window.removeEventListener('prosa:goto', go)
+    const goSettings = () => window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { screen: 'settings' } }))
+    window.addEventListener('prosa:settings_section', goSettings)
+    return () => {
+      window.removeEventListener('prosa:goto', go)
+      window.removeEventListener('prosa:settings_section', goSettings)
+    }
   }, [])
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -59,6 +67,19 @@ function PlanHub() {
 function Shell() {
   const [screen, setScreen] = useState('dashboard')
   const { theme, setTheme } = useTheme()
+  useEffect(() => {
+    const go = e => {
+      if (e.detail?.screen) {
+        setScreen(e.detail.screen)
+        if (e.detail.screen !== 'settings') sessionStorage.removeItem('prosa_settings_return')
+        if (e.detail.tab) {
+          setTimeout(() => window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { tab: e.detail.tab } })), 100)
+        }
+      }
+    }
+    window.addEventListener('prosa:goto', go)
+    return () => window.removeEventListener('prosa:goto', go)
+  }, [])
   return (
     <div className="h-screen bg-[var(--bg-root)] flex flex-col relative">
       <div className="shrink-0 px-4 flex items-center bg-[var(--bg-root)]"

@@ -81,6 +81,7 @@ export default function SalesScreen() {
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(true)
   const [pipeline, setPipeline] = useState('all')
+  const [searchQ, setSearchQ] = useState('')
   const [showSalesPopup, setShowSalesPopup] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const { position } = useGeolocation()
@@ -121,7 +122,9 @@ export default function SalesScreen() {
     return acc
   }, {})
 
-  const filtered = pipeline === 'all' ? data : data.filter(s => s.pipeline_status === pipeline)
+  const filtered = data
+    .filter(s => pipeline === 'all' || s.pipeline_status === pipeline)
+    .filter(s => !searchQ.trim() || s.name.toLowerCase().includes(searchQ.trim().toLowerCase()))
   const rows = [...filtered].sort((a, b) => {
     if (sortBy === 'name') return a.name.localeCompare(b.name)
     if (sortBy === 'last_delivery') return (b.days_since_visit ?? 9999) - (a.days_since_visit ?? 9999)
@@ -161,6 +164,17 @@ export default function SalesScreen() {
           </div>
         </div>
 
+        <div className="relative mb-2">
+          <input
+            value={searchQ}
+            onChange={e => setSearchQ(e.target.value)}
+            placeholder="Search stores..."
+            className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] pr-8"
+          />
+          {searchQ && (
+            <button onClick={() => setSearchQ('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted2)]">✕</button>
+          )}
+        </div>
         <div className="flex gap-2">
           <select value={pipeline} onChange={e => setPipeline(e.target.value)}
           className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]">

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase } from './supabaseClient'
 
 const DEFAULTS = {
@@ -11,6 +11,8 @@ const DEFAULTS = {
 export function useSettings() {
   const [settings, setSettings] = useState(DEFAULTS)
   const [loaded, setLoaded] = useState(false)
+  const saveTimer = useRef(null)
+  const pendingRef = useRef(null)
 
   const load = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser()
@@ -23,13 +25,21 @@ export function useSettings() {
 
   useEffect(() => { load() }, [load])
 
-  async function update(patch) {
-    setSettings(s => ({ ...s, ...patch }))
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    await supabase.from('user_settings')
-      .upsert({ user_id: user.id, ...settings, ...patch, updated_at: new Date().toISOString() })
-  }
+  const update = useCallback((patch) => {
+    setSettings(s => {
+      const next = { ...s, ...patch }
+      pendingRef.current = next
+      // Debounce DB write — only save after 600ms of no changes
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+      saveTimer.current = setTimeout(async () => {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user || !pendingRef.current) return
+        await supabase.from('user_settings')
+          .upsert({ user_id: user.id, ...pendingRef.current, updated_at: new Date().toISOString() })
+      }, 600)
+      return next
+    })
+  }, [])
 
   return { settings, update, loaded }
 }

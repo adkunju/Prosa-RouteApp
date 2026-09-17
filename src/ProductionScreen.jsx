@@ -19,7 +19,8 @@ export default function ProductionScreen() {
   const [skus, setSkus] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [form, setForm] = useState({ sku_id: '', qty: '', produced_on: new Date().toISOString().slice(0, 10) })
+  const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  const [form, setForm] = useState({ sku_id: '', qty: '', produced_on: localDate() })
   const [editingBatch, setEditingBatch] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
   const [prefill, setPrefill] = useState(null)
@@ -60,11 +61,18 @@ export default function ProductionScreen() {
         sku_id: sku.id,
         qty: Number(row.qty),
         produced_on: prefill.date,
-        expires_on: exp.toISOString().slice(0, 10),
+        expires_on: localDate(exp),
       })
     }
     sessionStorage.removeItem('prosa_production_prefill')
     setPrefill(null)
+    window.dispatchEvent(new CustomEvent('prosa:production_confirmed'))
+    const ret = sessionStorage.getItem('prosa_settings_return')
+    if (ret) {
+      sessionStorage.removeItem('prosa_settings_return')
+      const [screen, tab] = ret.split(':')
+      window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { screen, tab } }))
+    }
     setCreating(false)
     await load()
   }
@@ -87,7 +95,7 @@ export default function ProductionScreen() {
       sku_id: form.sku_id,
       qty: Number(form.qty),
       produced_on: form.produced_on,
-      expires_on: expiresOn.toISOString().slice(0, 10),
+      expires_on: localDate(expiresOn),
     })
     if (!error) { await load(); resetForm() }
     setSaving(false)
@@ -112,7 +120,7 @@ export default function ProductionScreen() {
 
   function resetForm() {
     setShowForm(false)
-    setForm({ sku_id: '', qty: '', produced_on: new Date().toISOString().slice(0, 10) })
+    setForm({ sku_id: '', qty: '', produced_on: localDate() })
   }
 
   const activeBatches = batches.filter(b => daysLeft(b.expires_on) > 0)

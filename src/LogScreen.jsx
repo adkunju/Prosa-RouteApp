@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { Plus, X, CheckCircle, Trash2, ChevronDown, Pencil } from 'lucide-react'
 
-const today = () => new Date().toISOString().slice(0, 10)
+const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+const today = () => localDate()
 function emptyLine(id) {
   return { id, sku_id: '', type: 'sale', produced_on: '', qty: '' }
 }
@@ -16,6 +17,7 @@ export default function LogScreen() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [store_id, setStoreId] = useState('')
+  const [editingLine, setEditingLine] = useState(null) // {id, qty_delivered, unit_price, is_offer}
   const [date, setDate] = useState(today())
   const [lines, setLines] = useState([emptyLine(1)])
   const [nextId, setNextId] = useState(2)
@@ -27,7 +29,7 @@ export default function LogScreen() {
       supabase.from('skus').select('id, name').eq('is_active', true).order('name'),
       supabase.from('production_batches').select('id, sku_id, produced_on, expires_on, qty').gt('expires_on', today()).order('expires_on'),
       supabase.from('delivery_lines')
-        .select('id, delivered_on, qty_delivered, sku_id, plan_stop_id, skus(name), plan_stops(store_id, stores(name)), returns(id, qty_returned), production_batches(produced_on)')
+        .select('id, delivered_on, qty_delivered, unit_price, is_offer, sku_id, plan_stop_id, store_id, skus(name), plan_stops(store_id, stores(name)), store:stores!delivery_lines_store_id_fkey(name), returns(id, qty_returned), production_batches(produced_on)')
         .order('delivered_on', { ascending: false }).limit(40),
     ])
     if (st) setStores(st)
@@ -49,6 +51,17 @@ export default function LogScreen() {
     if (!line.sku_id || !line.qty || !line.produced_on) return false
     return true
   }
+  async function saveEdit() {
+    if (!editingLine) return
+    await supabase.from('delivery_lines').update({
+      qty_delivered: Number(editingLine.qty_delivered) || 0,
+      unit_price: editingLine.unit_price === '' ? null : Number(editingLine.unit_price),
+      is_offer: editingLine.is_offer || false,
+    }).eq('id', editingLine.id)
+    setEditingLine(null)
+    load()
+  }
+
   function formValid() { return store_id && lines.every(lineValid) }
 
   function resetForm() {
@@ -136,25 +149,61 @@ export default function LogScreen() {
             <div className="text-[var(--text-muted2)] text-xs font-medium mb-2 uppercase tracking-wide">{d}</div>
             <div className="flex flex-col gap-2">
               {lines.map(line => (
-                <div key={line.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-3 flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[var(--text-primary)] text-sm font-medium truncate">{line.plan_stops?.stores?.name}</div>
-                    <div className="text-[var(--text-muted)] text-xs mt-0.5">
-                      {line.skus?.name}
-                      {line.qty_delivered > 0 && ` · ${line.qty_delivered} sold`}
-                      {line.returns?.length > 0 && ` · ${line.returns[0].qty_returned} returned`}
-                      {line.production_batches?.produced_on && (
-                        <span className="text-[var(--text-muted2)]"> · batch {line.production_batches.produced_on}</span>
-                      )}
+                <div key={line.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[var(--text-primary)] text-sm font-medium truncate">{line.plan_stops?.stores?.name || line.store?.name || 'Unknown store'}</div>
+                      <div className="text-[var(--text-muted)] text-xs mt-0.5">
+                        {line.skus?.name}
+                        {line.qty_delivered > 0 && ` · ${line.qty_delivered} sold`}
+                        {line.unit_price && ` · ₹${line.unit_price}`}
+                        {line.is_offer && <span className="text-[var(--text-gold)] ml-1">OFFER</span>}
+                        {line.returns?.length > 0 && ` · ${line.returns[0].qty_returned} returned`}
+                        {line.production_batches?.produced_on && (
+                          <span className="text-[var(--text-muted2)]"> · batch {line.production_batches.produced_on}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button onClick={() => setEditingLine(editingLine?.id === line.id ? null : { id: line.id, qty_delivered: line.qty_delivered, unit_price: line.unit_price ?? '', is_offer: line.is_offer || false })}
+                        className="text-[var(--text-muted2)] hover:text-[var(--accent)] text-xs transition-colors">
+                        Edit
+                      </button>
+                      <button onClick={() => deleteVisit(line.id, line.returns?.map(r => r.id) || [])}
+                        disabled={deleting === line.id}
+                        className="text-[var(--text-faint)] hover:text-red-400 transition-colors">
+                        {deleting === line.id ? '...' : <Trash2 size={15} />}
+                      </button>
                     </div>
                   </div>
-                  <button
-                    onClick={() => deleteVisit(line.id, line.returns?.map(r => r.id) || [])}
-                    disabled={deleting === line.id}
-                    className="text-[var(--text-faint)] hover:text-red-400 transition-colors shrink-0 mt-0.5"
-                  >
-                    {deleting === line.id ? '...' : <Trash2 size={15} />}
-                  </button>
+                  {editingLine?.id === line.id && (
+                    <div className="mt-3 pt-3 border-t border-[var(--bg-input)]/40 flex flex-col gap-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[var(--text-muted)] text-xs mb-1 block">Qty sold</label>
+                          <input type="number" min="0" value={editingLine.qty_delivered}
+                            onChange={e => setEditingLine(l => ({ ...l, qty_delivered: e.target.value }))}
+                            className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-1.5 text-sm outline-none" />
+                        </div>
+                        <div>
+                          <label className="text-[var(--text-muted)] text-xs mb-1 block">Price (₹)</label>
+                          <input type="number" min="0" step="0.01" value={editingLine.unit_price}
+                            onChange={e => setEditingLine(l => ({ ...l, unit_price: e.target.value }))}
+                            className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-1.5 text-sm outline-none" />
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <button onClick={() => setEditingLine(l => ({ ...l, is_offer: !l.is_offer }))}
+                          className={`text-xs px-2 py-1 rounded-lg border transition-colors ${editingLine.is_offer ? 'bg-[var(--text-gold)]/20 border-[var(--text-gold)] text-[var(--text-gold)]' : 'border-[var(--bg-input)] text-[var(--text-muted2)]'}`}>
+                          OFFER
+                        </button>
+                        <div className="flex gap-2">
+                          <button onClick={() => setEditingLine(null)} className="text-[var(--text-muted2)] text-xs px-3 py-1.5">Cancel</button>
+                          <button onClick={saveEdit} className="bg-[var(--accent)] text-white text-xs font-semibold px-3 py-1.5 rounded-lg">Save</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
