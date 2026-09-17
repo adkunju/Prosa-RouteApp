@@ -350,15 +350,13 @@ export default function PlanViewScreen() {
       .gte('plan_date', new Date().toISOString().slice(0, 10))
       .order('plan_date', { ascending: true })
       .limit(14)
-    const todayStr = new Date().toLocaleDateString('en-CA') // YYYY-MM-DD in local time
+    const todayStr = new Date().toLocaleDateString('en-CA')
     const withStops = [...new Set(
-      (data || []).filter(d => d.plan_stops?.length > 0).map(d => d.plan_date)
-    )]
-    // Only show today onwards
-    const futureWithStops = withStops.filter(d => d >= todayStr)
-    setDates(futureWithStops)
-    if (futureWithStops.length > 0) {
-      const upcoming = futureWithStops.find(d => d >= todayStr) || futureWithStops[0]
+      (data || []).filter(d => (d.plan_stops?.length ?? 0) > 0).map(d => d.plan_date)
+    )].filter(d => d >= todayStr).sort()
+    setDates(withStops)
+    if (withStops.length > 0) {
+      const upcoming = withStops.find(d => d >= todayStr) || withStops[0]
       setSelectedDate(upcoming)
     }
   }
@@ -772,7 +770,6 @@ export default function PlanViewScreen() {
           <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
             className="w-full bg-[var(--bg-card)] text-[var(--text-primary)] text-sm rounded-lg px-3 py-2 outline-none appearance-none">
             {dates.map(d => <option key={d} value={d}>{d}{d === today() ? ' (today)' : ''}</option>)}
-            {!dates.includes(today()) && <option value={today()}>{today()} (today) — no plan</option>}
           </select>
           <ChevronDown size={14} className="absolute right-3 top-2.5 text-[var(--text-muted)] pointer-events-none" />
         </div>
