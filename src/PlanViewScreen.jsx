@@ -5,7 +5,7 @@ import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => new Date().toLocaleDateString('en-CA')
 const START_HOUR = 9
 const MAPS_CHUNK_SIZE = 8
 
@@ -350,13 +350,15 @@ export default function PlanViewScreen() {
       .gte('plan_date', new Date().toISOString().slice(0, 10))
       .order('plan_date', { ascending: true })
       .limit(14)
+    const todayStr = new Date().toLocaleDateString('en-CA') // YYYY-MM-DD in local time
     const withStops = [...new Set(
       (data || []).filter(d => d.plan_stops?.length > 0).map(d => d.plan_date)
     )]
-    setDates(withStops)
-    if (withStops.length > 0) {
-      const today = new Date().toISOString().slice(0, 10)
-      const upcoming = withStops.find(d => d >= today) || withStops[withStops.length - 1]
+    // Only show today onwards
+    const futureWithStops = withStops.filter(d => d >= todayStr)
+    setDates(futureWithStops)
+    if (futureWithStops.length > 0) {
+      const upcoming = futureWithStops.find(d => d >= todayStr) || futureWithStops[0]
       setSelectedDate(upcoming)
     }
   }
