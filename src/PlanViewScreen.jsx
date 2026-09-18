@@ -4,6 +4,7 @@ import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
+import ProspectVisitModal from './ProspectVisitModal'
 
 const today = () => new Date().toLocaleDateString('en-CA')
 const START_HOUR = 9
@@ -149,6 +150,14 @@ function MarkVisitedForm({ stop, onDone }) {
         <button onClick={() => setOpen(false)}
           className="text-[var(--text-muted2)] text-xs px-2">Cancel</button>
       </div>
+      {prospectOpen && planId && (
+        <ProspectVisitModal
+          planId={planId}
+          stops={stops}
+          onClose={() => setProspectOpen(false)}
+          onAdded={() => { setProspectOpen(false); loadPlan(selectedDate) }}
+        />
+      )}
     </div>
   )
 }
@@ -305,6 +314,14 @@ function MapsCard({ links }) {
           ))}
         </div>
       )}
+      {prospectOpen && planId && (
+        <ProspectVisitModal
+          planId={planId}
+          stops={stops}
+          onClose={() => setProspectOpen(false)}
+          onAdded={() => { setProspectOpen(false); loadPlan(selectedDate) }}
+        />
+      )}
     </div>
   )
 }
@@ -340,6 +357,7 @@ export default function PlanViewScreen() {
   const [batches, setBatches] = useState([])
   const [useLiveOrigin, setUseLiveOrigin] = useState(false)
   const [liveCoords, setLiveCoords] = useState(null)
+  const [prospectOpen, setProspectOpen] = useState(false)
 
   async function loadDates() {
     // Only plans that have stops, sorted oldest-first so the dropdown reads
@@ -799,13 +817,15 @@ export default function PlanViewScreen() {
               </div>
             </div>
             <div className="flex gap-2 mb-2">
-              <button onClick={() => optimize('seconds')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${metric === 'seconds' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
-                <Zap size={12} /> Fastest {metric === 'seconds' ? `· ${Math.round(totalSeconds/60)}m` : ''}
+              <button onClick={() => optimize(metric === 'seconds' ? 'meters' : 'seconds')}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
+                {metric === 'seconds'
+                  ? <><Zap size={12} className="text-[var(--accent)]" /> Fastest · {Math.round(totalSeconds/60)}m</>
+                  : <><Gauge size={12} className="text-[var(--accent)]" /> Shortest · {(totalMeters/1000).toFixed(1)}km</>}
               </button>
-              <button onClick={() => optimize('meters')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${metric === 'meters' ? 'bg-[var(--accent)] text-white' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
-                <Gauge size={12} /> Shortest {metric === 'meters' ? `· ${(totalMeters/1000).toFixed(1)}km` : ''}
+              <button onClick={() => setProspectOpen(true)}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
+                🤝 Prospects
               </button>
             </div>
             {mapsLinks.length > 0 && (
@@ -1100,6 +1120,14 @@ export default function PlanViewScreen() {
             </button>
           </div>
         </div>
+      )}
+      {prospectOpen && planId && (
+        <ProspectVisitModal
+          planId={planId}
+          stops={stops}
+          onClose={() => setProspectOpen(false)}
+          onAdded={() => { setProspectOpen(false); loadPlan(selectedDate) }}
+        />
       )}
     </div>
   )
