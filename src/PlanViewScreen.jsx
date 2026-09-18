@@ -346,6 +346,8 @@ export default function PlanViewScreen() {
   const [useLiveOrigin, setUseLiveOrigin] = useState(false)
   const [liveCoords, setLiveCoords] = useState(null)
   const [prospectOpen, setProspectOpen] = useState(false)
+  const [showDelivered, setShowDelivered] = useState(false)
+  const [showSkipped, setShowSkipped] = useState(false)
 
   async function loadDates() {
     // Only plans that have stops, sorted oldest-first so the dropdown reads
@@ -874,108 +876,173 @@ export default function PlanViewScreen() {
             </span>
           </button>
         )}
-        {orderedStops.map((stop, idx) => {
-          const isDone = completedStopIds.has(stop.id)
-          return (
-            <div key={stop.id} data-stop-idx={idx}
-              style={(() => {
-                if (dragIdx === idx) return { transform: `translateY(${dragY}px) scale(1.03)`, zIndex: 30, position: 'relative', boxShadow: '0 12px 28px rgba(0,0,0,.45)', transition: 'none', pointerEvents: 'none' }
-                if (dragIdx === null || overIdx === null) return undefined
-                if (idx > dragIdx && idx <= overIdx) return { transform: 'translateY(-6px)' }
-                if (idx < dragIdx && idx >= overIdx) return { transform: 'translateY(6px)' }
-                return undefined
-              })()}
-              className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone || skippedStopIds.has(stop.id) ? 'opacity-50' : ''} ${dragIdx === idx ? 'ring-2 ring-[var(--accent)]' : 'transition-transform duration-150'} ${dragIdx !== null && dragIdx !== idx ? 'opacity-70' : ''}`}>
-              <div className="flex items-start justify-between mb-1">
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <span onPointerDown={e => startDrag(e, idx)}
-                    className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0 cursor-grab active:cursor-grabbing touch-none">
-                    <GripVertical size={14} className={dragIdx === idx ? 'text-[var(--accent)]' : ''} />
-                  </span>
-                  <button onClick={() => toggleLock(stop.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
-                    {locked[stop.store_id] ? <Lock size={13} className="text-[var(--text-gold)]" /> : <Unlock size={13} />}
-                  </button>
-                  <span className="text-[var(--text-primary)] text-sm font-medium truncate">{idx + 1}. {stop.stores?.name}</span>
-                  {stop.stores?.pipeline_status && stop.stores.pipeline_status !== 'onboard' && (
-                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 bg-[var(--accent)]/10 text-[var(--accent)]">
-                      {stop.stores.pipeline_status}
-                    </span>
-                  )}
-                  <ContactButtons phone={phones[stop.store_id]} />
-                </div>
-                <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0)}</span>
-              </div>
-              {(legInfo[idx]?.legMinutes || 0) > 500 ? (
-                <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1 italic">No route data · visit order estimated</div>
-              ) : (
-                <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1">
-                  +{Math.round(legInfo[idx]?.legMinutes || 0)} min · {(legInfo[idx]?.legKm || 0).toFixed(1)} km from previous
-                </div>
-              )}
-              {(!stop.requirements || stop.requirements.length === 0 || stop.requirements.every(r => (r.approved_qty ?? r.proposed_qty) === 0)) && (
-                <div className="text-[var(--text-muted2)] text-xs pl-5 italic">Visit only</div>
-              )}
-              {stop.requirements?.filter(r => (r.approved_qty ?? r.proposed_qty) > 0).map(req => {
-                const qty = req.approved_qty ?? req.proposed_qty
-                const moq = req.skus?.min_delivery_qty || 0
-                const dl = req.delivery_line
-                return (
-                  <div key={req.id} className="text-[var(--text-muted)] text-xs flex justify-between pl-5">
-                    <span className="flex items-center gap-1">
-                      {req.skus?.name}
-                      {dl?.is_offer && <span className="text-[var(--text-gold)] text-[10px] font-semibold">OFFER</span>}
-                    </span>
-                    <span className="text-[var(--text-secondary)]">
-                      {qty} {qty === 1 ? 'pc' : 'pcs'}
-                      {dl?.unit_price && <span className="text-[var(--text-muted2)]"> · ₹{dl.unit_price}</span>}
-                      {moq > 0 && qty < moq && <span className="text-[var(--text-gold)]"> · MOQ {moq}</span>}
-                    </span>
-                  </div>
-                )
-              })}
-              <div className="pl-5 mt-2">
-                {skippedStopIds.has(stop.id) ? (
-                  <div className="flex items-center gap-3">
-                    <span className="flex items-center gap-1.5 text-[var(--text-muted2)] text-xs">
-                      Skipped
-                    </span>
-                    <button onClick={() => toggleSkip(stop.id)}
-                      className="text-[var(--accent)] text-xs hover:opacity-80">
-                      Undo
+        {(() => {
+          const activeStops = orderedStops.filter(s => !skippedStopIds.has(s.id) && !completedStopIds.has(s.id))
+          const doneStops = orderedStops.filter(s => completedStopIds.has(s.id))
+          const skippedStops = orderedStops.filter(s => skippedStopIds.has(s.id) && !completedStopIds.has(s.id))
+
+          const renderCard = (stop, idx, draggable) => {
+            const isDone = completedStopIds.has(stop.id)
+            const isSkipped = skippedStopIds.has(stop.id)
+            return (
+              <div key={stop.id} data-stop-idx={draggable ? idx : undefined}
+                style={draggable ? (() => {
+                  if (dragIdx === idx) return { transform: `translateY(${dragY}px) scale(1.03)`, zIndex: 30, position: 'relative', boxShadow: '0 12px 28px rgba(0,0,0,.45)', transition: 'none', pointerEvents: 'none' }
+                  if (dragIdx === null || overIdx === null) return undefined
+                  if (idx > dragIdx && idx <= overIdx) return { transform: 'translateY(-6px)' }
+                  if (idx < dragIdx && idx >= overIdx) return { transform: 'translateY(6px)' }
+                  return undefined
+                })() : undefined}
+                className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone || isSkipped ? 'opacity-50' : ''} ${draggable && dragIdx === idx ? 'ring-2 ring-[var(--accent)]' : 'transition-transform duration-150'} ${draggable && dragIdx !== null && dragIdx !== idx ? 'opacity-70' : ''}`}>
+                <div className="flex items-start justify-between mb-1">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    {draggable && (
+                      <span onPointerDown={e => startDrag(e, idx)}
+                        className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0 cursor-grab active:cursor-grabbing touch-none">
+                        <GripVertical size={14} className={dragIdx === idx ? 'text-[var(--accent)]' : ''} />
+                      </span>
+                    )}
+                    <button onClick={() => toggleLock(stop.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
+                      {locked[stop.store_id] ? <Lock size={13} className="text-[var(--text-gold)]" /> : <Unlock size={13} />}
                     </button>
+                    <span className="text-[var(--text-primary)] text-sm font-medium truncate">{stop.stores?.name}</span>
+                    {stop.stores?.pipeline_status && stop.stores.pipeline_status !== 'onboard' && (
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 bg-[var(--accent)]/10 text-[var(--accent)]">
+                        {stop.stores.pipeline_status}
+                      </span>
+                    )}
+                    <ContactButtons phone={phones[stop.store_id]} />
                   </div>
-                ) : isDone ? (
-                  <span className="flex items-center gap-1.5 text-[var(--accent)] text-xs">
-                    <CheckCircle size={14} /> Delivered
-                  </span>
+                  <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0)}</span>
+                </div>
+                {(legInfo[idx]?.legMinutes || 0) > 500 ? (
+                  <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1 italic">No route data · visit order estimated</div>
                 ) : (
-                  (!stop.requirements || stop.requirements.length === 0) ? (
-                    <div className="flex items-center gap-2">
-                      <MarkVisitedForm stop={stop} onDone={() => setCompletedStopIds(s => new Set([...s, stop.id]))} />
+                  <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1">
+                    +{Math.round(legInfo[idx]?.legMinutes || 0)} min · {(legInfo[idx]?.legKm || 0).toFixed(1)} km from previous
+                  </div>
+                )}
+                {(!stop.requirements || stop.requirements.length === 0 || stop.requirements.every(r => (r.approved_qty ?? r.proposed_qty) === 0)) && (
+                  <div className="text-[var(--text-muted2)] text-xs pl-5 italic">Visit only</div>
+                )}
+                {stop.requirements?.filter(r => (r.approved_qty ?? r.proposed_qty) > 0).map(req => {
+                  const qty = req.approved_qty ?? req.proposed_qty
+                  const moq = req.skus?.min_delivery_qty || 0
+                  const dl = req.delivery_line
+                  return (
+                    <div key={req.id} className="text-[var(--text-muted)] text-xs flex justify-between pl-5">
+                      <span className="flex items-center gap-1">
+                        {req.skus?.name}
+                        {dl?.is_offer && <span className="text-[var(--text-gold)] text-[10px] font-semibold">OFFER</span>}
+                      </span>
+                      <span className="text-[var(--text-secondary)]">
+                        {qty} {qty === 1 ? 'pc' : 'pcs'}
+                        {dl?.unit_price && <span className="text-[var(--text-muted2)]"> · ₹{dl.unit_price}</span>}
+                        {moq > 0 && qty < moq && <span className="text-[var(--text-gold)]"> · MOQ {moq}</span>}
+                      </span>
+                    </div>
+                  )
+                })}
+                <div className="pl-5 mt-2">
+                  {isSkipped ? (
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1.5 text-[var(--text-muted2)] text-xs">Skipped</span>
+                      <button onClick={() => toggleSkip(stop.id)} className="text-[var(--accent)] text-xs hover:opacity-80">Undo</button>
+                    </div>
+                  ) : isDone ? (
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1.5 text-[var(--accent)] text-xs">
+                        <CheckCircle size={14} /> Delivered
+                      </span>
                       <button onClick={async () => {
-                        await supabase.from('plan_stops').delete().eq('id', stop.id)
-                        loadPlan(selectedDate)
-                      }} className="text-red-400 text-xs px-2 py-1.5 rounded-lg bg-[var(--bg-input)]/40 hover:bg-red-400/20 transition-colors">
-                        Remove
+                        const { data: dls } = await supabase.from('delivery_lines').select('id').eq('plan_stop_id', stop.id)
+                        if (dls?.length) {
+                          for (const dl of dls) {
+                            await supabase.from('returns').delete().eq('delivery_line_id', dl.id)
+                          }
+                          await supabase.from('delivery_lines').delete().eq('plan_stop_id', stop.id)
+                        }
+                        setCompletedStopIds(s => { const n = new Set(s); n.delete(stop.id); return n })
+                      }} className="text-[var(--text-muted2)] hover:text-red-400 text-xs transition-colors">
+                        Undo
                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => openCompleteForm(stop)}
-                        className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-accent)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
-                        <ClipboardCheck size={13} /> Record delivery <ChevronRight size={12} className="opacity-70" />
-                      </button>
-                      <button onClick={() => toggleSkip(stop.id)}
-                        className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs px-2 py-1.5 rounded-lg bg-[var(--bg-input)]/40 transition-colors">
-                        Skip
-                      </button>
-                    </div>
-                  )
-                )}
+                    (!stop.requirements || stop.requirements.length === 0) ? (
+                      <div className="flex items-center gap-2">
+                        <MarkVisitedForm stop={stop} onDone={() => setCompletedStopIds(s => new Set([...s, stop.id]))} />
+                        <button onClick={async () => {
+                          await supabase.from('plan_stops').delete().eq('id', stop.id)
+                          loadPlan(selectedDate)
+                        }} className="text-red-400 text-xs px-2 py-1.5 rounded-lg bg-[var(--bg-input)]/40 hover:bg-red-400/20 transition-colors">
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => openCompleteForm(stop)}
+                          className="flex items-center gap-1.5 bg-[var(--bg-input)]/60 hover:bg-[var(--accent)] hover:text-white text-[var(--text-accent)] text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
+                          <ClipboardCheck size={13} /> Record delivery <ChevronRight size={12} className="opacity-70" />
+                        </button>
+                        <button onClick={() => toggleSkip(stop.id)}
+                          className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs px-2 py-1.5 rounded-lg bg-[var(--bg-input)]/40 transition-colors">
+                          Skip
+                        </button>
+                      </div>
+                    )
+                  )}
+                </div>
               </div>
-            </div>
+            )
+          }
+
+          return (
+            <>
+              {activeStops.map(stop => {
+                const idx = orderedStops.findIndex(s => s.id === stop.id)
+                return renderCard(stop, idx, true)
+              })}
+
+              {doneStops.length > 0 && (
+                <div className="mt-1">
+                  <button onClick={() => setShowDelivered(v => !v)}
+                    className="w-full flex items-center justify-between bg-[var(--bg-card)]/60 rounded-xl px-4 py-2.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-input)]/60 transition-colors">
+                    <span className="flex items-center gap-1.5">
+                      <CheckCircle size={13} className="text-[var(--accent)]" /> Delivered ({doneStops.length})
+                    </span>
+                    <ChevronDown size={14} className={showDelivered ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                  </button>
+                  {showDelivered && (
+                    <div className="flex flex-col gap-2 mt-2">
+                      {doneStops.map(stop => {
+                        const idx = orderedStops.findIndex(s => s.id === stop.id)
+                        return renderCard(stop, idx, false)
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {skippedStops.length > 0 && (
+                <div className="mt-1">
+                  <button onClick={() => setShowSkipped(v => !v)}
+                    className="w-full flex items-center justify-between bg-[var(--bg-card)]/60 rounded-xl px-4 py-2.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-input)]/60 transition-colors">
+                    <span className="flex items-center gap-1.5">Skipped ({skippedStops.length})</span>
+                    <ChevronDown size={14} className={showSkipped ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                  </button>
+                  {showSkipped && (
+                    <div className="flex flex-col gap-2 mt-2">
+                      {skippedStops.map(stop => {
+                        const idx = orderedStops.findIndex(s => s.id === stop.id)
+                        return renderCard(stop, idx, false)
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )
-        })}
+        })()}
       </div>
 
       {quickOpen && <QuickDeliverModal onClose={() => setQuickOpen(false)} onSaved={() => loadPlan?.()} />}
