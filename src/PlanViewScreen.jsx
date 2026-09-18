@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
@@ -430,6 +430,23 @@ export default function PlanViewScreen() {
     setLoading(false)
   }
 
+  const [stateRestored, setStateRestored] = React.useState(false)
+
+  // Restore ephemeral delivery state (skipped stops, extra SKUs, metric) from sessionStorage
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('prosa_delivery_state')
+      if (raw) {
+        const s = JSON.parse(raw)
+        if (s.selectedDate) setSelectedDate(s.selectedDate)
+        if (s.metric) setMetric(s.metric)
+        if (s.skippedStopIds) setSkippedStopIds(new Set(s.skippedStopIds))
+        if (s.extraReqs) setExtraReqs(s.extraReqs)
+      }
+    } catch {}
+    setStateRestored(true)
+  }, [])
+
   useEffect(() => { loadDates(); loadMatrix(); loadBatches() }, [])
   useEffect(() => { loadPlan(selectedDate) }, [selectedDate])
 
@@ -439,6 +456,20 @@ export default function PlanViewScreen() {
     }
     // eslint-disable-next-line
   }, [stops, depot, matrixSeconds])
+
+  // Persist ephemeral delivery state so tab switches don't reset it
+  // Guard with stateRestored so we don't overwrite saved state before restore runs
+  useEffect(() => {
+    if (!stateRestored) return
+    try {
+      sessionStorage.setItem('prosa_delivery_state', JSON.stringify({
+        selectedDate,
+        metric,
+        skippedStopIds: [...skippedStopIds],
+        extraReqs,
+      }))
+    } catch {}
+  }, [stateRestored, selectedDate, metric, skippedStopIds, extraReqs])
 
   function cost(a, b, m) {
     const map = m === 'seconds' ? matrixSeconds : matrixMeters
