@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { Plus, X, CheckCircle, Trash2, ChevronDown, Pencil } from 'lucide-react'
+import { Plus, X, CheckCircle, Trash2, ChevronDown, Save } from 'lucide-react'
 
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 const today = () => localDate()
@@ -17,7 +17,7 @@ export default function LogScreen() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [store_id, setStoreId] = useState('')
-  const [editingLine, setEditingLine] = useState(null) // {id, qty_delivered, unit_price, is_offer}
+  const [editingLine, setEditingLine] = useState(null) // {id, sku_id, batch_id, produced_on, qty_delivered, qty_returned, type, unit_price, is_offer, plan_stop_id, store_name, delivered_on, return_id}
   const [date, setDate] = useState(today())
   const [lines, setLines] = useState([emptyLine(1)])
   const [nextId, setNextId] = useState(2)
@@ -53,11 +53,26 @@ export default function LogScreen() {
   }
   async function saveEdit() {
     if (!editingLine) return
+    const batch = batchesForSku(editingLine.sku_id).find(b => b.produced_on === editingLine.produced_on)
     await supabase.from('delivery_lines').update({
-      qty_delivered: Number(editingLine.qty_delivered) || 0,
+      sku_id: editingLine.sku_id,
+      batch_id: batch?.id || editingLine.batch_id || null,
+      qty_delivered: editingLine.type === 'return' ? 0 : (Number(editingLine.qty_delivered) || 0),
       unit_price: editingLine.unit_price === '' ? null : Number(editingLine.unit_price),
       is_offer: editingLine.is_offer || false,
     }).eq('id', editingLine.id)
+    if (editingLine.type === 'return') {
+      const qty = Number(editingLine.qty_returned) || 0
+      if (editingLine.return_id) {
+        await supabase.from('returns').update({ qty_returned: qty, returned_on: editingLine.delivered_on }).eq('id', editingLine.return_id)
+      } else {
+        await supabase.from('returns').insert({ delivery_line_id: editingLine.id, qty_returned: qty, returned_on: editingLine.delivered_on, possible_stockout: false })
+      }
+    } else {
+      if (editingLine.return_id) {
+        await supabase.from('returns').delete().eq('id', editingLine.return_id)
+      }
+    }
     setEditingLine(null)
     load()
   }
@@ -92,10 +107,19 @@ export default function LogScreen() {
     }
     if (!planId) { setSaving(false); return }
 
-    const { count } = await supabase.from('plan_stops').select('id', { count: 'exact', head: true }).eq('plan_id', planId)
-    const { data: stop } = await supabase.from('plan_stops')
-      .insert({ plan_id: planId, store_id, stop_order: (count || 0) + 1 })
-      .select('id').single()
+    // Reuse existing stop — plan_stops has UNIQUE(plan_id, store_id)
+    const { data: existingStop } = await supabase.from('plan_stops')
+      .select('id').eq('plan_id', planId).eq('store_id', store_id).maybeSingle()
+    let stop
+    if (existingStop) {
+      stop = existingStop
+    } else {
+      const { count } = await supabase.from('plan_stops').select('id', { count: 'exact', head: true }).eq('plan_id', planId)
+      const { data: newStop } = await supabase.from('plan_stops')
+        .insert({ plan_id: planId, store_id, stop_order: (count || 0) + 1 })
+        .select('id').single()
+      stop = newStop
+    }
     if (!stop) { setSaving(false); return }
 
     for (const line of lines) {
@@ -165,7 +189,21 @@ export default function LogScreen() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <button onClick={() => setEditingLine(editingLine?.id === line.id ? null : { id: line.id, qty_delivered: line.qty_delivered, unit_price: line.unit_price ?? '', is_offer: line.is_offer || false })}
+                      <button onClick={() => setEditingLine({
+                          id: line.id,
+                          sku_id: line.sku_id,
+                          batch_id: line.batch_id,
+                          produced_on: line.production_batches?.produced_on || '',
+                          qty_delivered: line.qty_delivered,
+                          qty_returned: line.returns?.[0]?.qty_returned || '',
+                          type: (line.returns?.length > 0) ? 'return' : 'sale',
+                          unit_price: line.unit_price ?? '',
+                          is_offer: line.is_offer || false,
+                          plan_stop_id: line.plan_stop_id,
+                          store_name: line.plan_stops?.stores?.name || line.store?.name || 'Unknown store',
+                          delivered_on: line.delivered_on,
+                          return_id: line.returns?.[0]?.id || null,
+                        })}
                         className="text-[var(--text-muted2)] hover:text-[var(--accent)] text-xs transition-colors">
                         Edit
                       </button>
@@ -176,40 +214,102 @@ export default function LogScreen() {
                       </button>
                     </div>
                   </div>
-                  {editingLine?.id === line.id && (
-                    <div className="mt-3 pt-3 border-t border-[var(--bg-input)]/40 flex flex-col gap-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-[var(--text-muted)] text-xs mb-1 block">Qty sold</label>
-                          <input type="number" min="0" value={editingLine.qty_delivered}
-                            onChange={e => setEditingLine(l => ({ ...l, qty_delivered: e.target.value }))}
-                            className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-1.5 text-sm outline-none" />
-                        </div>
-                        <div>
-                          <label className="text-[var(--text-muted)] text-xs mb-1 block">Price (₹)</label>
-                          <input type="number" min="0" step="0.01" value={editingLine.unit_price}
-                            onChange={e => setEditingLine(l => ({ ...l, unit_price: e.target.value }))}
-                            className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-1.5 text-sm outline-none" />
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <button onClick={() => setEditingLine(l => ({ ...l, is_offer: !l.is_offer }))}
-                          className={`text-xs px-2 py-1 rounded-lg border transition-colors ${editingLine.is_offer ? 'bg-[var(--text-gold)]/20 border-[var(--text-gold)] text-[var(--text-gold)]' : 'border-[var(--bg-input)] text-[var(--text-muted2)]'}`}>
-                          OFFER
-                        </button>
-                        <div className="flex gap-2">
-                          <button onClick={() => setEditingLine(null)} className="text-[var(--text-muted2)] text-xs px-3 py-1.5">Cancel</button>
-                          <button onClick={saveEdit} className="bg-[var(--accent)] text-white text-xs font-semibold px-3 py-1.5 rounded-lg">Save</button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+
                 </div>
               ))}
             </div>
           </div>
         ))}
       </div>
+
+      {editingLine && (
+        <div className="absolute inset-0 bg-[var(--bg-root)] flex flex-col z-10">
+          <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
+            <h2 className="text-[var(--text-primary)] font-semibold">Edit Entry</h2>
+            <button onClick={() => setEditingLine(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-3">
+            <div className="bg-[var(--bg-card)] rounded-xl px-4 py-3 flex justify-between items-center">
+              <span className="text-[var(--text-primary)] text-sm font-medium">{editingLine.store_name}</span>
+              <span className="text-[var(--text-muted)] text-xs">{editingLine.delivered_on}</span>
+            </div>
+            <div className="bg-[var(--bg-card)] rounded-xl p-4 flex flex-col gap-3">
+              <span className="text-[var(--text-muted)] text-xs font-medium uppercase tracking-wide">Product</span>
+              <div className="relative">
+                <select value={editingLine.sku_id}
+                  onChange={e => setEditingLine(l => ({ ...l, sku_id: e.target.value, produced_on: '' }))}
+                  className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] appearance-none">
+                  {skus.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                <ChevronDown size={15} className="absolute right-3 top-3 text-[var(--text-muted)] pointer-events-none" />
+              </div>
+              <div className="flex rounded-lg overflow-hidden border border-[var(--bg-hover)]">
+                <button onClick={() => setEditingLine(l => ({ ...l, type: 'sale' }))}
+                  className={`flex-1 py-2 text-sm font-medium transition-colors ${editingLine.type === 'sale' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-white'}`}>
+                  Sale
+                </button>
+                <button onClick={() => setEditingLine(l => ({ ...l, type: 'return' }))}
+                  className={`flex-1 py-2 text-sm font-medium transition-colors ${editingLine.type === 'return' ? 'bg-[var(--text-amber)] text-white' : 'text-[var(--text-muted)] hover:text-white'}`}>
+                  Return
+                </button>
+              </div>
+              <div>
+                <label className="text-[var(--text-muted)] text-xs mb-1 block">Batch (production date)</label>
+                <div className="relative">
+                  <select value={editingLine.produced_on}
+                    onChange={e => setEditingLine(l => ({ ...l, produced_on: e.target.value }))}
+                    disabled={!editingLine.sku_id}
+                    className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] appearance-none disabled:opacity-50">
+                    <option value="">Select batch...</option>
+                    {batchesForSku(editingLine.sku_id).map(b => (
+                      <option key={b.id} value={b.produced_on}>{b.produced_on} · expires {b.expires_on} · {b.qty} pcs</option>
+                    ))}
+                  </select>
+                  <ChevronDown size={15} className="absolute right-3 top-3 text-[var(--text-muted)] pointer-events-none" />
+                </div>
+                {editingLine.sku_id && batchesForSku(editingLine.sku_id).length === 0 && (
+                  <p className="text-[var(--text-gold)] text-xs mt-1">No active batches — original batch may have expired</p>
+                )}
+              </div>
+              {editingLine.type === 'sale' ? (
+                <div>
+                  <label className="text-[var(--text-muted)] text-xs mb-1 block">Qty sold</label>
+                  <input type="number" min="0" value={editingLine.qty_delivered}
+                    onChange={e => setEditingLine(l => ({ ...l, qty_delivered: e.target.value }))}
+                    className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                </div>
+              ) : (
+                <div>
+                  <label className="text-[var(--text-muted)] text-xs mb-1 block">Qty returned</label>
+                  <input type="number" min="0" value={editingLine.qty_returned}
+                    onChange={e => setEditingLine(l => ({ ...l, qty_returned: e.target.value }))}
+                    className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                </div>
+              )}
+              {editingLine.type === 'sale' && (
+                <>
+                  <div>
+                    <label className="text-[var(--text-muted)] text-xs mb-1 block">Price per unit (₹)</label>
+                    <input type="number" min="0" step="0.01" value={editingLine.unit_price}
+                      onChange={e => setEditingLine(l => ({ ...l, unit_price: e.target.value }))}
+                      className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                  </div>
+                  <button onClick={() => setEditingLine(l => ({ ...l, is_offer: !l.is_offer }))}
+                    className={`self-start text-xs px-3 py-1.5 rounded-lg border transition-colors ${editingLine.is_offer ? 'bg-[var(--text-gold)]/20 border-[var(--text-gold)] text-[var(--text-gold)]' : 'border-[var(--bg-input)] text-[var(--text-muted2)]'}`}>
+                    OFFER PRICE
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
+            <button onClick={saveEdit}
+              className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-semibold rounded-xl py-3 transition-colors flex items-center justify-center gap-2">
+              <Save size={18} /> Save Changes
+            </button>
+          </div>
+        </div>
+      )}
 
       {showForm && (
         <div className="absolute inset-0 bg-[var(--bg-root)] flex flex-col">

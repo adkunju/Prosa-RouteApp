@@ -391,40 +391,14 @@ export default function WeekPlanScreen() {
     return grouped
   }, [dueStores, assignment])
 
-  // Recomputed on every change: route each day depot -> stops -> depot using
-  // real matrix legs, plus service time at each stop.
-  const dayKm = useMemo(() => {
-    const m = (a, b) => (a === b ? 0 : (matrixMeters[`${a}_${b}`] ?? matrixMeters[`${b}_${a}`] ?? 5000))
-    return byDay.map(stops => {
-      if (!stops.length || !depotId) return 0
-      let meters = 0
-      let prev = depotId
-      stops.forEach(s => { meters += m(prev, s.store_id); prev = s.store_id })
-      meters += m(prev, depotId)
-      return Math.round(meters / 100) / 10
-    })
-  }, [byDay, matrixMeters, depotId])
-
-  const dayMinutes = useMemo(() => {
-    const leg = (a, b) => matrixMap[`${a}_${b}`] ?? matrixMap[`${b}_${a}`] ?? 600
-    return byDay.map(stops => {
-      if (!stops.length || !depotId) return 0
-      let seconds = 0
-      let prev = depotId
-      stops.forEach(s => { seconds += leg(prev, s.store_id); prev = s.store_id })
-      seconds += leg(prev, depotId)
-      const service = stops.reduce((a, s) => a + (s.service_minutes || 15), 0)
-      return Math.round(seconds / 60 + service)
-    })
-  }, [byDay, matrixMap, depotId])
-
   const leg = (a, b) => (a === b ? 0 : (matrixMap[`${a}_${b}`] ?? matrixMap[`${b}_${a}`] ?? 600))
 
-  // Order each day depot -> ... -> depot by nearest neighbour, so that
-  // insertion positions below mean something.
+  // Order each day: nearest-neighbour seed then 2-opt (matches Delivery screen)
   const dayRoutes = useMemo(() => {
     if (!depotId) return byDay.map(() => [])
     return byDay.map(stops => {
+      if (!stops.length) return []
+      // Nearest-neighbour seed
       const pool = [...stops]
       const out = []
       let cur = depotId
@@ -435,9 +409,55 @@ export default function WeekPlanScreen() {
         }
         out.push(pool[bi]); cur = pool[bi].store_id; pool.splice(bi, 1)
       }
-      return out
+      // 2-opt improvement
+      const routeCost = (route) => {
+        let t = leg(depotId, route[0].store_id)
+        for (let i = 0; i < route.length - 1; i++) t += leg(route[i].store_id, route[i+1].store_id)
+        t += leg(route[route.length - 1].store_id, depotId)
+        return t
+      }
+      let best = [...out]
+      let improved = true
+      while (improved) {
+        improved = false
+        for (let i = 0; i < best.length - 1; i++) {
+          for (let j = i + 1; j < best.length; j++) {
+            const candidate = [...best.slice(0, i), ...best.slice(i, j + 1).reverse(), ...best.slice(j + 1)]
+            if (routeCost(candidate) < routeCost(best) - 0.0001) {
+              best = candidate; improved = true
+            }
+          }
+        }
+      }
+      return best
     })
   }, [byDay, matrixMap, depotId])
+
+  // Recomputed on every change: route each day depot -> stops -> depot using
+  // real matrix legs, plus service time at each stop.
+  const dayKm = useMemo(() => {
+    const m = (a, b) => (a === b ? 0 : (matrixMeters[`${a}_${b}`] ?? matrixMeters[`${b}_${a}`] ?? 0))
+    return dayRoutes.map(stops => {
+      if (!stops.length || !depotId) return 0
+      let meters = 0
+      let prev = depotId
+      stops.forEach(s => { meters += m(prev, s.store_id); prev = s.store_id })
+      meters += m(prev, depotId)
+      return Math.round(meters / 100) / 10
+    })
+  }, [dayRoutes, matrixMeters, depotId])
+
+  const dayMinutes = useMemo(() => {
+    return dayRoutes.map(stops => {
+      if (!stops.length || !depotId) return 0
+      let seconds = 0
+      let prev = depotId
+      stops.forEach(s => { seconds += leg(prev, s.store_id); prev = s.store_id })
+      seconds += leg(prev, depotId)
+      const service = stops.reduce((a, s) => a + (s.service_minutes || 15), 0)
+      return Math.round(seconds / 60 + service)
+    })
+  }, [dayRoutes, matrixMap, depotId])
 
   // Cost of adding a store to a day: travel from the nearest stop already on
   // that day, plus the time spent in the store. Simple and always positive.

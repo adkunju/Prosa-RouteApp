@@ -196,7 +196,7 @@ export default function ProductionScreen() {
 
         {editingBatch && (
           <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/95 flex items-end">
-            <div className="bg-[var(--bg-card)] rounded-t-2xl p-4 w-full">
+            <div className="bg-[var(--bg-card)] rounded-t-2xl p-4 pb-24 w-full">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-[var(--text-primary)] font-semibold">Edit Batch</h3>
                 <button onClick={() => setEditingBatch(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
