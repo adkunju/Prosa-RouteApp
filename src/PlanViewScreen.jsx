@@ -150,14 +150,8 @@ function MarkVisitedForm({ stop, onDone }) {
         <button onClick={() => setOpen(false)}
           className="text-[var(--text-muted2)] text-xs px-2">Cancel</button>
       </div>
-      {prospectOpen && planId && (
-        <ProspectVisitModal
-          planId={planId}
-          stops={stops}
-          onClose={() => setProspectOpen(false)}
-          onAdded={() => { setProspectOpen(false); loadPlan(selectedDate) }}
-        />
-      )}
+
+      
     </div>
   )
 }
@@ -288,7 +282,7 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
 }
 
 
-function MapsCard({ links, onProspects }) {
+function MapsCard({ links }) {
   const [open, setOpen] = useState(false)
   if (links.length === 1) {
     return (
@@ -314,14 +308,8 @@ function MapsCard({ links, onProspects }) {
           ))}
         </div>
       )}
-      {prospectOpen && planId && (
-        <ProspectVisitModal
-          planId={planId}
-          stops={stops}
-          onClose={() => setProspectOpen(false)}
-          onAdded={() => { setProspectOpen(false); loadPlan(selectedDate) }}
-        />
-      )}
+
+      
     </div>
   )
 }
@@ -823,13 +811,13 @@ export default function PlanViewScreen() {
                   ? <><Zap size={12} className="text-[var(--accent)]" /> Fastest · {Math.round(totalSeconds/60)}m</>
                   : <><Gauge size={12} className="text-[var(--accent)]" /> Shortest · {(totalMeters/1000).toFixed(1)}km</>}
               </button>
-              <button onClick={onProspects}
+              <button onClick={() => setProspectOpen(true)}
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
                 🤝 Prospects
               </button>
             </div>
             {mapsLinks.length > 0 && (
-              <MapsCard links={mapsLinks} onProspects={() => setProspectOpen(true)} />
+              <MapsCard links={mapsLinks} />
             )}
           </div>
         </>
@@ -1121,6 +1109,7 @@ export default function PlanViewScreen() {
           </div>
         </div>
       )}
+
       {prospectOpen && planId && (
         <ProspectVisitModal
           planId={planId}
