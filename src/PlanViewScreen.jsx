@@ -5,13 +5,14 @@ import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 import ProspectVisitModal from './ProspectVisitModal'
+import { useSettings } from './useSettings'
 
 const today = () => new Date().toLocaleDateString('en-CA')
-const START_HOUR = 9
+// START_HOUR replaced by settings.route_start_time
 const MAPS_CHUNK_SIZE = 8
 
-function formatEta(minutesFromStart) {
-  const totalMin = START_HOUR * 60 + minutesFromStart
+function formatEta(minutesFromStart, startMinutes) {
+  const totalMin = (startMinutes ?? 9 * 60) + minutesFromStart
   const h = Math.floor(totalMin / 60) % 24
   const m = Math.round(totalMin % 60)
   const ampm = h >= 12 ? 'PM' : 'AM'
@@ -348,6 +349,18 @@ export default function PlanViewScreen() {
   const [prospectOpen, setProspectOpen] = useState(false)
   const [showDelivered, setShowDelivered] = useState(false)
   const [showSkipped, setShowSkipped] = useState(false)
+  const { settings } = useSettings()
+
+  const effectiveStartMinutes = (() => {
+    const [sh, sm] = (settings.route_start_time || '09:00').split(':').map(Number)
+    const settingsMin = sh * 60 + sm
+    if (selectedDate === today()) {
+      const now = new Date()
+      const nowMin = now.getHours() * 60 + now.getMinutes()
+      return nowMin > settingsMin ? nowMin : settingsMin
+    }
+    return settingsMin
+  })()
 
   async function loadDates() {
     // Only plans that have stops, sorted oldest-first so the dropdown reads
@@ -869,7 +882,18 @@ export default function PlanViewScreen() {
             className="w-full bg-[var(--bg-card)]/60 rounded-xl p-3 text-xs flex items-center gap-2 hover:bg-[var(--bg-input)]/60 transition-colors">
             <span className={useLiveOrigin ? 'text-[var(--accent)]' : 'text-[var(--text-gold)]'}>●</span>
             <span className="text-[var(--text-muted)] flex-1 text-left">
-              {useLiveOrigin ? 'Start: Live location (9:00 AM)' : 'Start: Depot (9:00 AM)'}
+              {(() => {
+                const [sh, sm] = (settings.route_start_time || '09:00').split(':').map(Number)
+                const h12 = sh % 12 === 0 ? 12 : sh % 12
+                const ampm = sh >= 12 ? 'PM' : 'AM'
+                const timeStr = `${h12}:${sm.toString().padStart(2,'0')} ${ampm}`
+                const nowMin = new Date().getHours() * 60 + new Date().getMinutes()
+                const settMin = sh * 60 + sm
+                const isLate = selectedDate === today() && nowMin > settMin
+                return useLiveOrigin
+                  ? `Start: Live location (${isLate ? 'Now' : timeStr})`
+                  : `Start: Depot (${isLate ? 'Now' : timeStr})`
+              })()}
             </span>
             <span className={`px-2 py-0.5 rounded-lg font-medium ${useLiveOrigin ? 'bg-[var(--accent)]/20 text-[var(--accent)]' : 'bg-[var(--bg-input)] text-[var(--text-muted2)]'}`}>
               {useLiveOrigin ? '📍 Live' : '🏠 Depot'} · tap to switch
@@ -913,7 +937,7 @@ export default function PlanViewScreen() {
                     )}
                     <ContactButtons phone={phones[stop.store_id]} />
                   </div>
-                  <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0)}</span>
+                  <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0, effectiveStartMinutes)}</span>
                 </div>
                 {(legInfo[idx]?.legMinutes || 0) > 500 ? (
                   <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1 italic">No route data · visit order estimated</div>

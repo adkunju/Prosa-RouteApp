@@ -176,6 +176,17 @@ export default function SettingsScreen({ theme, setTheme }) {
         </div>
       </div>
 
+      <div className="bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--border-card)] rounded-2xl p-4 mt-2">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[var(--text-primary)] text-sm font-medium">Route start time</span>
+          <span className="text-[var(--text-accent)] text-sm font-semibold">{settings.route_start_time || '09:00'}</span>
+        </div>
+        <p className="text-[var(--text-muted2)] text-xs mb-3">ETAs on the Delivery screen start from this time. Switches to current time automatically if you depart late.</p>
+        <input type="time" value={settings.route_start_time || '09:00'}
+          onChange={ev => update({ route_start_time: ev.target.value })}
+          className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+      </div>
+
       <div className="bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--border-card)] rounded-2xl p-4 flex items-center justify-between mt-2">
         <span className="flex items-center gap-3 text-[var(--text-primary)] text-sm font-medium">
           {theme === 'dark' ? <Moon size={18} className="text-[var(--text-accent)]" /> : <Sun size={18} className="text-[var(--text-gold)]" />}
