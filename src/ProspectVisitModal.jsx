@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { X, Clock } from 'lucide-react'
 
-export default function ProspectVisitModal({ planId, stops, onClose, onAdded }) {
+export default function ProspectVisitModal({ planId, stops, onClose, onAdded, depot, matrixSeconds }) {
   const [prospects, setProspects] = useState([])
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(null)
@@ -77,6 +77,32 @@ export default function ProspectVisitModal({ planId, stops, onClose, onAdded }) 
     dormant: 'text-red-400 bg-red-400/10',
   }
 
+  function timeImpactMin(storeId) {
+    if (!depot || !matrixSeconds) return null
+    const depotId = depot.id
+    const leg = (a, b) => matrixSeconds[`${a}_${b}`] ?? matrixSeconds[`${b}_${a}`] ?? null
+    // Find cheapest insertion: min(leg(depot→store) + leg(store→first)) or just leg(last→store) + leg(store→depot)
+    const storeStops = (stops || []).map(s => s.store_id)
+    if (storeStops.length === 0) {
+      const there = leg(depotId, storeId)
+      const back = leg(storeId, depotId)
+      return there != null && back != null ? Math.round((there + back) / 60) : null
+    }
+    let minCost = Infinity
+    const seq = [depotId, ...storeStops, depotId]
+    for (let i = 0; i < seq.length - 1; i++) {
+      const a = seq[i], b = seq[i + 1]
+      const toStore = leg(a, storeId)
+      const fromStore = leg(storeId, b)
+      const existing = leg(a, b)
+      if (toStore != null && fromStore != null && existing != null) {
+        const cost = toStore + fromStore - existing
+        if (cost < minCost) minCost = cost
+      }
+    }
+    return minCost === Infinity ? null : Math.round(Math.max(0, minCost) / 60)
+  }
+
   return (
     <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col">
       <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0">
@@ -116,6 +142,11 @@ export default function ProspectVisitModal({ planId, stops, onClose, onAdded }) 
                     ? <span>{s.days_since_visit}d since last visit · {s.visit_count} total</span>
                     : <span className="text-[var(--text-gold)]">Never visited</span>
                   }
+                  {timeImpactMin(s.id) != null && (
+                    <span className="ml-1 text-[var(--text-muted)] bg-[var(--bg-input)] px-1.5 py-0.5 rounded">
+                      +{timeImpactMin(s.id)}m
+                    </span>
+                  )}
                 </div>
               </div>
               {isAdded ? (

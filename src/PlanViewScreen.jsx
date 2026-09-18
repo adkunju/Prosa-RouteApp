@@ -400,7 +400,7 @@ export default function PlanViewScreen() {
 
     const { data } = await supabase
       .from('plan_stops')
-      .select('id, stop_order, store_id, locked, stores(id, name), requirements(id, sku_id, proposed_qty, approved_qty, skus(name, shelf_life_days, min_delivery_qty))')
+      .select('id, stop_order, store_id, locked, stores(id, name, pipeline_status), requirements(id, sku_id, proposed_qty, approved_qty, skus(name, shelf_life_days, min_delivery_qty))')
       .eq('plan_id', plan.id)
       .order('stop_order')
 
@@ -865,13 +865,22 @@ export default function PlanViewScreen() {
                     {locked[stop.store_id] ? <Lock size={13} className="text-[var(--text-gold)]" /> : <Unlock size={13} />}
                   </button>
                   <span className="text-[var(--text-primary)] text-sm font-medium truncate">{idx + 1}. {stop.stores?.name}</span>
+                  {stop.stores?.pipeline_status && stop.stores.pipeline_status !== 'onboard' && (
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 bg-[var(--accent)]/10 text-[var(--accent)]">
+                      {stop.stores.pipeline_status}
+                    </span>
+                  )}
                   <ContactButtons phone={phones[stop.store_id]} />
                 </div>
                 <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0)}</span>
               </div>
-              <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1">
-                +{Math.round(legInfo[idx]?.legMinutes || 0)} min · {(legInfo[idx]?.legKm || 0).toFixed(1)} km from previous
-              </div>
+              {(legInfo[idx]?.legMinutes || 0) > 500 ? (
+                <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1 italic">No route data · visit order estimated</div>
+              ) : (
+                <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1">
+                  +{Math.round(legInfo[idx]?.legMinutes || 0)} min · {(legInfo[idx]?.legKm || 0).toFixed(1)} km from previous
+                </div>
+              )}
               {(!stop.requirements || stop.requirements.length === 0 || stop.requirements.every(r => (r.approved_qty ?? r.proposed_qty) === 0)) && (
                 <div className="text-[var(--text-muted2)] text-xs pl-5 italic">Visit only</div>
               )}
@@ -910,7 +919,15 @@ export default function PlanViewScreen() {
                   </span>
                 ) : (
                   (!stop.requirements || stop.requirements.length === 0) ? (
-                    <MarkVisitedForm stop={stop} onDone={() => setCompletedStopIds(s => new Set([...s, stop.id]))} />
+                    <div className="flex items-center gap-2">
+                      <MarkVisitedForm stop={stop} onDone={() => setCompletedStopIds(s => new Set([...s, stop.id]))} />
+                      <button onClick={async () => {
+                        await supabase.from('plan_stops').delete().eq('id', stop.id)
+                        loadPlan(selectedDate)
+                      }} className="text-red-400 text-xs px-2 py-1.5 rounded-lg bg-[var(--bg-input)]/40 hover:bg-red-400/20 transition-colors">
+                        Remove
+                      </button>
+                    </div>
                   ) : (
                     <div className="flex items-center gap-2">
                       <button onClick={() => openCompleteForm(stop)}
@@ -1114,8 +1131,10 @@ export default function PlanViewScreen() {
         <ProspectVisitModal
           planId={planId}
           stops={stops}
+          depot={depot}
+          matrixSeconds={matrixSeconds}
           onClose={() => setProspectOpen(false)}
-          onAdded={() => { setProspectOpen(false); loadPlan(selectedDate) }}
+          onAdded={() => loadPlan(selectedDate)}
         />
       )}
     </div>
