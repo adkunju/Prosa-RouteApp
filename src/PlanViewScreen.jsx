@@ -288,7 +288,7 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
 }
 
 
-function MapsCard({ links }) {
+function MapsCard({ links, onProspects }) {
   const [open, setOpen] = useState(false)
   if (links.length === 1) {
     return (
@@ -823,13 +823,13 @@ export default function PlanViewScreen() {
                   ? <><Zap size={12} className="text-[var(--accent)]" /> Fastest · {Math.round(totalSeconds/60)}m</>
                   : <><Gauge size={12} className="text-[var(--accent)]" /> Shortest · {(totalMeters/1000).toFixed(1)}km</>}
               </button>
-              <button onClick={() => setProspectOpen(true)}
+              <button onClick={onProspects}
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
                 🤝 Prospects
               </button>
             </div>
             {mapsLinks.length > 0 && (
-              <MapsCard links={mapsLinks} />
+              <MapsCard links={mapsLinks} onProspects={() => setProspectOpen(true)} />
             )}
           </div>
         </>
