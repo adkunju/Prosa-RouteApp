@@ -10,7 +10,7 @@ export function useGeolocation() {
     navigator.geolocation.getCurrentPosition(
       pos => { setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setStatus('granted') },
       () => setStatus('denied'),
-      { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
     )
   }
 
