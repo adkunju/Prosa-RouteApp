@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from './supabaseClient'
 import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
@@ -158,17 +158,22 @@ function MarkVisitedForm({ stop, onDone }) {
 }
 
 function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
+  const [tab, setTab] = useState('all')
   const [q, setQ] = useState('')
   const [all, setAll] = useState([])
+  const [prospects, setProspects] = useState([])
   const [forecast, setForecast] = useState({})
   const [matrix, setMatrix] = useState({})
   const [depot, setDepot] = useState(null)
-  const [preview, setPreview] = useState(null) // store to confirm
+  const [preview, setPreview] = useState(null)
   const [adding, setAdding] = useState(false)
+  const [prospectAdded, setProspectAdded] = useState(new Set())
+  const [visitDate, setVisitDate] = useState(selectedDate || new Date().toLocaleDateString('en-CA'))
 
   useEffect(() => { (async () => {
-    const [{ data: st }, { data: fc }, { data: mx }, { data: dep }] = await Promise.all([
-      supabase.from('stores').select('id,name').eq('is_active',true).eq('is_depot',false).eq('exclude_from_forecast',false).order('name'),
+    const [{ data: st }, { data: pr }, { data: fc }, { data: mx }, { data: dep }] = await Promise.all([
+      supabase.from('stores').select('id,name,pipeline_status').eq('is_active',true).eq('is_depot',false).eq('exclude_from_forecast',false).order('name'),
+      supabase.from('stores').select('id,name,pipeline_status').eq('is_active',true).eq('is_depot',false).not('pipeline_status','in','("onboard","dropped")').order('name'),
       supabase.from('store_sales_summary').select('store_id,visit_count,revenue,last_visit,days_since_visit'),
       supabase.from('travel_matrix').select('from_store_id,to_store_id,seconds'),
       supabase.from('stores').select('id').eq('is_depot',true).maybeSingle(),
@@ -177,13 +182,14 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
     ;(fc||[]).forEach(r => { fcMap[r.store_id] = r })
     const mxMap = {}
     ;(mx||[]).forEach(r => { mxMap[`${r.from_store_id}_${r.to_store_id}`] = r.seconds })
-    setAll(st||[])
+    const todayIds = new Set(stops.map(s => s.store_id))
+    setAll((st||[]).filter(s => !todayIds.has(s.id)))
+    setProspects((pr||[]).filter(s => !todayIds.has(s.id)).map(s => ({ ...s, ...fcMap[s.id] })).sort((a,b) => (b.days_since_visit??9999)-(a.days_since_visit??9999)))
     setForecast(fcMap)
     setMatrix(mxMap)
     setDepot(dep)
   })() }, [])
 
-  const todayIds = new Set(stops.map(s => s.store_id))
   const leg = (a, b) => a === b ? 0 : (matrix[`${a}_${b}`] ?? matrix[`${b}_${a}`] ?? 99999)
 
   function getBestPos(storeId) {
@@ -196,30 +202,62 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
     return { pos: best, addedMin: Math.round(Math.max(0, bestCost) / 60) }
   }
 
-  const notToday = all
-    .filter(s => !todayIds.has(s.id))
-    .sort((a, b) => {
-      const da = forecast[a.id]?.days_since_visit ?? 9999
-      const db = forecast[b.id]?.days_since_visit ?? 9999
-      return db - da
-    })
-  const matches = q.length > 1
-    ? notToday.filter(s => s.name.toLowerCase().includes(q.toLowerCase())).slice(0,8)
-    : notToday.slice(0,10)
+  function timeImpact(storeId) {
+    const seq = [depot?.id, ...stops.map(s => s.store_id), depot?.id].filter(Boolean)
+    if (seq.length < 2) return null
+    let minCost = Infinity
+    for (let i = 0; i < seq.length - 1; i++) {
+      const a = seq[i], b = seq[i+1]
+      const to = matrix[`${a}_${storeId}`] ?? matrix[`${storeId}_${a}`]
+      const from = matrix[`${storeId}_${b}`] ?? matrix[`${b}_${storeId}`]
+      const existing = matrix[`${a}_${b}`] ?? matrix[`${b}_${a}`]
+      if (to != null && from != null && existing != null) minCost = Math.min(minCost, to + from - existing)
+    }
+    return minCost === Infinity ? null : Math.round(Math.max(0, minCost) / 60)
+  }
+
+  const qLower = q.toLowerCase()
+  const allMatches = q.length > 1 ? all.filter(s => s.name.toLowerCase().includes(qLower)).slice(0,10) : all.slice(0,10)
+  const prospectMatches = q.length > 1 ? prospects.filter(s => s.name.toLowerCase().includes(qLower)) : prospects
 
   async function confirmAdd() {
     if (!preview || adding) return
     setAdding(true)
     const { pos } = getBestPos(preview.id)
     const insertOrder = pos + 1
-    // Shift existing stops up to make room
     const toShift = stops.filter(s => s.stop_order >= insertOrder).sort((a,b) => b.stop_order - a.stop_order)
-    for (const s of toShift) {
-      await supabase.from('plan_stops').update({ stop_order: s.stop_order + 1 }).eq('id', s.id)
-    }
+    for (const s of toShift) await supabase.from('plan_stops').update({ stop_order: s.stop_order + 1 }).eq('id', s.id)
     await supabase.from('plan_stops').insert({ plan_id: planId, store_id: preview.id, stop_order: insertOrder })
     setAdding(false)
     onAdded()
+  }
+
+  async function addProspect(store) {
+    if (adding) return
+    setAdding(store.id)
+    const { data: plan } = await supabase.from('plans').select('id').eq('plan_date', visitDate).maybeSingle()
+    const targetPlanId = plan?.id || planId
+    const { data: existingStops } = await supabase.from('plan_stops').select('stop_order').eq('plan_id', targetPlanId).order('stop_order', { ascending: false }).limit(1)
+    const maxOrder = existingStops?.[0]?.stop_order || 0
+    await supabase.from('plan_stops').insert({ plan_id: targetPlanId, store_id: store.id, stop_order: maxOrder + 1 })
+    setAdding(null)
+    setProspectAdded(a => new Set([...a, store.id]))
+    onAdded()
+  }
+
+  async function removeProspect(store) {
+    const { data: plan } = await supabase.from('plans').select('id').eq('plan_date', visitDate).maybeSingle()
+    if (!plan) return
+    await supabase.from('plan_stops').delete().eq('plan_id', plan.id).eq('store_id', store.id)
+    setProspectAdded(a => { const n = new Set(a); n.delete(store.id); return n })
+    onAdded()
+  }
+
+  const statusColor = {
+    prospect: 'text-[var(--accent)] bg-[var(--accent)]/10',
+    warm: 'text-[var(--text-gold)] bg-[var(--text-gold)]/10',
+    cold: 'text-[var(--text-muted2)] bg-[var(--bg-input)]',
+    dormant: 'text-red-400 bg-red-400/10',
   }
 
   if (preview) {
@@ -230,29 +268,17 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
       <div className="flex flex-col gap-3">
         <div className="bg-[var(--bg-card)]/80 border border-[var(--accent)]/30 rounded-xl p-4">
           <div className="text-[var(--text-primary)] text-sm font-semibold mb-1">{preview.name}</div>
-          <div className="text-[var(--text-muted2)] text-xs mb-2">
-            Inserts after <span className="text-[var(--text-secondary)]">{afterStop}</span> · adds ~{addedMin} min
-          </div>
+          <div className="text-[var(--text-muted2)] text-xs mb-2">Inserts after <span className="text-[var(--text-secondary)]">{afterStop}</span> · adds ~{addedMin} min</div>
           {fc && fc.visit_count > 0 ? (
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="bg-[var(--bg-input)]/50 rounded-lg p-2">
-                <div className="text-[var(--text-muted2)]">Last delivery</div>
-                <div className="text-[var(--text-secondary)]">{fc.days_since_visit}d ago</div>
-              </div>
-              <div className="bg-[var(--bg-input)]/50 rounded-lg p-2">
-                <div className="text-[var(--text-muted2)]">Total revenue</div>
-                <div className="text-[var(--text-secondary)]">₹{Number(fc.revenue).toLocaleString('en-IN',{maximumFractionDigits:0})}</div>
-              </div>
+              <div className="bg-[var(--bg-input)]/50 rounded-lg p-2"><div className="text-[var(--text-muted2)]">Last delivery</div><div className="text-[var(--text-secondary)]">{fc.days_since_visit}d ago</div></div>
+              <div className="bg-[var(--bg-input)]/50 rounded-lg p-2"><div className="text-[var(--text-muted2)]">Total revenue</div><div className="text-[var(--text-secondary)]">₹{Number(fc.revenue).toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
             </div>
-          ) : (
-            <div className="text-[var(--text-gold)] text-xs">No delivery history — new store</div>
-          )}
+          ) : <div className="text-[var(--text-gold)] text-xs">No delivery history — new store</div>}
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setPreview(null)}
-            className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-sm px-3 py-2">Back</button>
-          <button onClick={confirmAdd} disabled={adding}
-            className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-sm font-semibold rounded-xl py-2.5 transition-colors">
+          <button onClick={() => setPreview(null)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-sm px-3 py-2">Back</button>
+          <button onClick={confirmAdd} disabled={adding} className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-sm font-semibold rounded-xl py-2.5 transition-colors">
             {adding ? 'Adding...' : 'Add to route'}
           </button>
         </div>
@@ -262,28 +288,91 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
 
   return (
     <>
-      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search or browse..."
-        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-2" />
-      {!q && <p className="text-[var(--text-muted2)] text-xs mb-2">Stores not on today's route</p>}
-      {matches.map(s => {
-        const fc = forecast[s.id]
-        return (
-          <button key={s.id} onClick={() => setPreview(s)}
-            className="w-full text-left bg-[var(--bg-card)]/70 hover:bg-[var(--bg-input)]/60 rounded-xl px-4 py-3 mb-1.5 transition-colors">
-            <div className="text-[var(--text-secondary)] text-sm">{s.name}</div>
-            {fc && fc.visit_count > 0
-              ? <div className="text-[var(--text-muted2)] text-xs mt-0.5">{fc.days_since_visit}d since last delivery · ₹{Number(fc.revenue).toLocaleString('en-IN',{maximumFractionDigits:0})} total</div>
-              : <div className="text-[var(--text-gold)] text-xs mt-0.5">No delivery history</div>
-            }
-          </button>
-        )
-      })}
+      <div className="flex rounded-xl overflow-hidden border border-[var(--bg-hover)] mb-3">
+        <button onClick={() => setTab('all')} className={`flex-1 py-2 text-xs font-medium transition-colors ${tab === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>All stores</button>
+        <button onClick={() => setTab('prospects')} className={`flex-1 py-2 text-xs font-medium transition-colors ${tab === 'prospects' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>🤝 Prospects</button>
+      </div>
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search stores..."
+        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-3" />
+      {tab === 'all' && (
+        <>
+          {!q && <p className="text-[var(--text-muted2)] text-xs mb-2">Stores not on today's route · sorted by days since last visit</p>}
+          {allMatches.map(s => {
+            const fc = forecast[s.id]
+            return (
+              <button key={s.id} onClick={() => setPreview(s)} className="w-full text-left bg-[var(--bg-card)]/70 hover:bg-[var(--bg-input)]/60 rounded-xl px-4 py-3 mb-1.5 transition-colors">
+                <div className="flex items-center gap-2">
+                  <span className="text-[var(--text-secondary)] text-sm">{s.name}</span>
+                  {s.pipeline_status && s.pipeline_status !== 'onboard' && (
+                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${statusColor[s.pipeline_status] || 'text-[var(--text-muted2)] bg-[var(--bg-input)]'}`}>{s.pipeline_status}</span>
+                  )}
+                </div>
+                {fc && fc.visit_count > 0 ? <div className="text-[var(--text-muted2)] text-xs mt-0.5">{fc.days_since_visit}d since last delivery · ₹{Number(fc.revenue).toLocaleString('en-IN',{maximumFractionDigits:0})} total</div>
+                  : <div className="text-[var(--text-gold)] text-xs mt-0.5">No delivery history</div>}
+              </button>
+            )
+          })}
+        </>
+      )}
+      {tab === 'prospects' && (
+        <>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-[var(--text-muted)] text-xs shrink-0">Visit date</span>
+            <input type="date" value={visitDate} onChange={e => setVisitDate(e.target.value)}
+              className="flex-1 bg-[var(--bg-input)] text-[var(--text-primary)] text-xs rounded-lg px-3 py-1.5 outline-none" />
+          </div>
+          {prospectMatches.length === 0 && <p className="text-[var(--text-muted2)] text-sm text-center mt-8">No prospects match</p>}
+          {prospectMatches.map(s => {
+            const isAdded = prospectAdded.has(s.id)
+            const impact = timeImpact(s.id)
+            return (
+              <div key={s.id} className={`bg-[var(--bg-card)] rounded-xl p-3 flex items-center gap-3 mb-1.5 ${isAdded ? 'opacity-70' : ''}`}>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="text-[var(--text-primary)] text-sm font-medium truncate">{s.name}</span>
+                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 ${statusColor[s.pipeline_status] || 'text-[var(--text-muted2)] bg-[var(--bg-input)]'}`}>{s.pipeline_status}</span>
+                  </div>
+                  <div className="text-[var(--text-muted2)] text-xs flex items-center gap-1.5">
+                    {s.days_since_visit != null ? <span>{s.days_since_visit}d since last visit</span> : <span className="text-[var(--text-gold)]">Never visited</span>}
+                    {impact != null && <span className="bg-[var(--bg-input)] px-1.5 py-0.5 rounded">+{impact}m</span>}
+                  </div>
+                </div>
+                {isAdded
+                  ? <button onClick={() => removeProspect(s)} className="shrink-0 bg-[var(--bg-input)] text-red-400 text-xs font-semibold rounded-xl px-3 py-2 hover:bg-red-400/20">Remove</button>
+                  : <button onClick={() => addProspect(s)} disabled={adding === s.id} className="shrink-0 bg-[var(--accent)] disabled:opacity-50 text-white text-xs font-semibold rounded-xl px-3 py-2 hover:opacity-90">{adding === s.id ? '...' : '+ Add'}</button>
+                }
+              </div>
+            )
+          })}
+        </>
+      )}
     </>
   )
 }
 
 
-function MapsCard({ links }) {
+function MapsCard({ links, compact }) {
+  if (compact) {
+    const [open, setOpen] = React.useState(false)
+    return (
+      <div className="flex-1 relative">
+        <button onClick={() => setOpen(v => !v)}
+          className="w-full flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
+          <Navigation size={11} /> Maps {open ? '▲' : '▼'}
+        </button>
+        {open && (
+          <div className="absolute top-full left-0 right-0 z-10 flex flex-col gap-1 mt-1 bg-[var(--bg-card)] rounded-xl p-2 shadow-xl border border-[var(--bg-input)]">
+            {links.map((link, i) => (
+              <a key={i} href={link.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-input)] transition-colors">
+                <Navigation size={11} /> {link.label}
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
   const [open, setOpen] = useState(false)
   if (links.length === 1) {
     return (
@@ -745,6 +834,8 @@ export default function PlanViewScreen() {
   const [dragIdx, setDragIdx] = useState(null)
   const [overIdx, setOverIdx] = useState(null)
   const [dragY, setDragY] = useState(0)
+  const scrollRef = useRef(null)
+  const scrollRafRef = useRef(null)
 
   // Pointer events rather than HTML5 drag-and-drop, which never fires on
   // mobile browsers — where this list is actually used.
@@ -753,15 +844,41 @@ export default function PlanViewScreen() {
     setDragIdx(idx)
     setOverIdx(idx)
     let target = idx
-    const startY = e.clientY
+    let lastY = e.clientY
+    let accY = 0
     const move = ev => {
       const pt = ev.touches ? ev.touches[0] : ev
-      setDragY(pt.clientY - startY)
+      const delta = pt.clientY - lastY
+      lastY = pt.clientY
+      accY += delta
+      setDragY(accY)
       const el = document.elementFromPoint(pt.clientX, pt.clientY)
       const row = el && el.closest('[data-stop-idx]')
       if (row) { target = Number(row.getAttribute('data-stop-idx')); setOverIdx(target) }
+      // Auto-scroll when near edges
+      const container = scrollRef.current
+      if (container) {
+        const rect = container.getBoundingClientRect()
+        const ZONE = 80
+        const MAX_SPEED = 12
+        cancelAnimationFrame(scrollRafRef.current)
+        const y = pt.clientY
+        let speed = 0
+        if (y < rect.top + ZONE) speed = -MAX_SPEED * (1 - (y - rect.top) / ZONE)
+        else if (y > rect.bottom - ZONE) speed = MAX_SPEED * (1 - (rect.bottom - y) / ZONE)
+        if (speed !== 0) {
+          const scroll = () => {
+            container.scrollTop += speed
+            accY += speed
+            setDragY(accY)
+            scrollRafRef.current = requestAnimationFrame(scroll)
+          }
+          scrollRafRef.current = requestAnimationFrame(scroll)
+        }
+      }
     }
     const end = () => {
+      cancelAnimationFrame(scrollRafRef.current)
       if (target !== idx) {
         setOrder(prev => {
           const next = [...prev]
@@ -795,8 +912,13 @@ export default function PlanViewScreen() {
     return { legMinutes: legSeconds / 60, legKm: legMeters / 1000, eta: arrival }
   })
 
-  const totalSeconds = depot?.id ? routeCost(depot.id, order, (a, b) => cost(a, b, 'seconds')) : 0
-  const totalMeters = depot?.id ? routeCost(depot.id, order, (a, b) => cost(a, b, 'meters')) : 0
+  // Only count remaining active stops (not skipped, not completed) for live stats
+  const remainingOrder = order.filter(id => {
+    const stop = stops.find(s => s.store_id === id)
+    return stop && !skippedStopIds.has(stop.id) && !completedStopIds.has(stop.id)
+  })
+  const totalSeconds = depot?.id ? routeCost(depot.id, remainingOrder, (a, b) => cost(a, b, 'seconds'), false) : 0
+  const totalMeters = depot?.id ? routeCost(depot.id, remainingOrder, (a, b) => cost(a, b, 'meters'), false) : 0
 
   const totalsBySku = {}
   stops.forEach(stop => {
@@ -816,60 +938,46 @@ export default function PlanViewScreen() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
-      <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center gap-2 shrink-0">
-        <Calendar size={15} className="text-[var(--text-accent)]" />
-        <div className="relative flex-1">
+      <div className="px-3 py-1.5 border-b border-[var(--bg-input)] flex items-center gap-2 shrink-0">
+        <Calendar size={13} className="text-[var(--text-accent)] shrink-0" />
+        <div className="relative shrink-0">
           <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
-            className="w-full bg-[var(--bg-card)] text-[var(--text-primary)] text-sm rounded-lg px-3 py-2 outline-none appearance-none">
+            className="bg-transparent text-[var(--text-primary)] text-xs font-medium outline-none appearance-none pr-4">
             {dates.map(d => <option key={d} value={d}>{d}{d === today() ? ' (today)' : ''}</option>)}
           </select>
-          <ChevronDown size={14} className="absolute right-3 top-2.5 text-[var(--text-muted)] pointer-events-none" />
+          <ChevronDown size={11} className="absolute right-0 top-0.5 text-[var(--text-muted)] pointer-events-none" />
         </div>
+        <span className="text-[var(--text-muted2)] text-xs flex-1 truncate">{Math.round(totalSeconds / 60)}m · {(totalMeters / 1000).toFixed(1)}km · {completedCount}/{orderedStops.length}</span>
       </div>
 
-      {Object.keys(totalsBySku).length > 0 && (
-        <div className="px-4 py-3 bg-[var(--bg-card)]/60 border-b border-[var(--bg-input)] flex flex-wrap gap-3 shrink-0">
-          {Object.entries(totalsBySku).map(([sku, qty]) => (
-            <div key={sku} className="text-[var(--text-primary)] text-sm font-semibold">{sku}: <span className="text-[var(--text-accent)]">{qty} pcs</span></div>
-          ))}
+      {stops.length > 0 && (
+        <div className="px-3 py-1.5 border-b border-[var(--bg-input)] flex gap-2 shrink-0">
+          <button onClick={() => optimize(metric === 'seconds' ? 'meters' : 'seconds')}
+            className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
+            {metric === 'seconds'
+              ? <><Zap size={11} className="text-[var(--accent)]" /> Fastest</>
+              : <><Gauge size={11} className="text-[var(--accent)]" /> Shortest</>}
+          </button>
+          {mapsLinks.length > 0 && (
+            mapsLinks.length === 1
+              ? <a href={mapsLinks[0].url} target="_blank" rel="noopener noreferrer"
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
+                  <Navigation size={11} /> Maps
+                </a>
+              : <MapsCard links={mapsLinks} compact />
+          )}
+          <button onClick={() => setAddStopOpen(true)}
+            className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
+            + Add
+          </button>
+          <button onClick={saveOrder} disabled={saving}
+            className="flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] disabled:opacity-50 transition-colors shrink-0">
+            {saving ? <Loader2 size={11} className="animate-spin" /> : saved ? <><CheckCircle size={11} className="text-[var(--accent)]" /> Saved</> : <><Save size={11} /> Save</>}
+          </button>
         </div>
       )}
 
-      {stops.length > 0 && (
-        <>
-          <div className="px-4 py-2 bg-[var(--bg-root)] border-b border-[var(--bg-card)] shrink-0">
-            <div className="flex items-center justify-between text-xs text-[var(--text-muted)] mb-2">
-              <span>{Math.round(totalSeconds / 60)} min drive · {(totalMeters / 1000).toFixed(1)} km · {completedCount}/{orderedStops.length} done</span>
-              <div className="flex items-center gap-3">
-                <button onClick={() => setAddStopOpen(true)}
-                  className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)]">
-                  + Add visit
-                </button>
-                <button onClick={saveOrder} disabled={saving} className="flex items-center gap-1 text-[var(--text-accent)] hover:text-[var(--text-accent2)] disabled:opacity-50">
-                  {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <span className="text-[var(--accent)]">Saved!</span> : <><Save size={13} /> Save order</>}
-                </button>
-              </div>
-            </div>
-            <div className="flex gap-2 mb-2">
-              <button onClick={() => optimize(metric === 'seconds' ? 'meters' : 'seconds')}
-                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
-                {metric === 'seconds'
-                  ? <><Zap size={12} className="text-[var(--accent)]" /> Fastest · {Math.round(totalSeconds/60)}m</>
-                  : <><Gauge size={12} className="text-[var(--accent)]" /> Shortest · {(totalMeters/1000).toFixed(1)}km</>}
-              </button>
-              <button onClick={() => setProspectOpen(true)}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--bg-card)] text-[var(--text-muted)] hover:bg-[var(--bg-input)] transition-colors">
-                🤝 Prospects
-              </button>
-            </div>
-            {mapsLinks.length > 0 && (
-              <MapsCard links={mapsLinks} />
-            )}
-          </div>
-        </>
-      )}
-
-      <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
         {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Loading...</div>}
         {!loading && stops.length === 0 && (
           <div className="text-center text-[var(--text-muted2)] mt-16">
@@ -911,13 +1019,11 @@ export default function PlanViewScreen() {
             return (
               <div key={stop.id} data-stop-idx={draggable ? idx : undefined}
                 style={draggable ? (() => {
-                  if (dragIdx === idx) return { transform: `translateY(${dragY}px) scale(1.03)`, zIndex: 30, position: 'relative', boxShadow: '0 12px 28px rgba(0,0,0,.45)', transition: 'none', pointerEvents: 'none' }
+                  if (dragIdx === idx) return { transform: `translateY(${dragY}px) scale(0.92)`, zIndex: 30, position: 'relative', opacity: 0.85, boxShadow: '0 8px 20px rgba(0,0,0,.35)', transition: 'none', pointerEvents: 'none' }
                   if (dragIdx === null || overIdx === null) return undefined
-                  if (idx > dragIdx && idx <= overIdx) return { transform: 'translateY(-6px)' }
-                  if (idx < dragIdx && idx >= overIdx) return { transform: 'translateY(6px)' }
                   return undefined
                 })() : undefined}
-                className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone || isSkipped ? 'opacity-50' : ''} ${draggable && dragIdx === idx ? 'ring-2 ring-[var(--accent)]' : 'transition-transform duration-150'} ${draggable && dragIdx !== null && dragIdx !== idx ? 'opacity-70' : ''}`}>
+                className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone || isSkipped ? 'opacity-50' : ''} ${draggable && dragIdx === idx ? 'ring-2 ring-[var(--accent)]' : 'transition-transform duration-150'} ${draggable && dragIdx !== null && dragIdx !== idx ? 'opacity-60' : ''}`}>
                 <div className="flex items-start justify-between mb-1">
                   <div className="flex items-center gap-2 min-w-0 flex-1">
                     {draggable && (
@@ -992,7 +1098,7 @@ export default function PlanViewScreen() {
                       </button>
                     </div>
                   ) : (
-                    (!stop.requirements || stop.requirements.length === 0) ? (
+                    (!stop.requirements || stop.requirements.length === 0 || stop.requirements.every(r => (r.approved_qty ?? r.proposed_qty) === 0)) ? (
                       <div className="flex items-center gap-2">
                         <MarkVisitedForm stop={stop} onDone={() => setCompletedStopIds(s => new Set([...s, stop.id]))} />
                         <button onClick={async () => {
@@ -1022,10 +1128,25 @@ export default function PlanViewScreen() {
 
           return (
             <>
-              {activeStops.map(stop => {
+              {activeStops.map((stop, listIdx) => {
                 const idx = orderedStops.findIndex(s => s.id === stop.id)
-                return renderCard(stop, idx, true)
+                // A drop line appears BEFORE this card when:
+                // - dragging downward: overIdx === idx and dragIdx < idx  → line above target
+                // - dragging upward:  overIdx === idx and dragIdx > idx  → line above target (card slides down)
+                const showLineBefore = dragIdx !== null && overIdx === idx && overIdx !== dragIdx
+                return (
+                  <React.Fragment key={stop.id}>
+                    {showLineBefore && (
+                      <div style={{height: 3, borderRadius: 2, background: 'var(--accent)', boxShadow: '0 0 8px 2px var(--accent)', margin: '0 8px'}} />
+                    )}
+                    {renderCard(stop, idx, true)}
+                  </React.Fragment>
+                )
               })}
+              {/* Line at end when dragging to last position */}
+              {dragIdx !== null && overIdx === activeStops.length - 1 && dragIdx < activeStops.length - 1 && (
+                <div style={{height: 3, borderRadius: 2, background: 'var(--accent)', boxShadow: '0 0 8px 2px var(--accent)', margin: '0 8px'}} />
+              )}
 
               {doneStops.length > 0 && (
                 <div className="mt-1">
@@ -1073,11 +1194,10 @@ export default function PlanViewScreen() {
       {addStopOpen && planId && (
         <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
           <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0">
-            <span className="text-[var(--text-primary)] font-semibold">Add stop to today</span>
+            <span className="text-[var(--text-primary)] font-semibold">Add stop / Prospects</span>
             <button onClick={() => setAddStopOpen(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
-            <p className="text-[var(--text-muted2)] text-xs mb-4">Search for a store to add as a visit-only stop. No delivery will be planned — use this for prospecting or relationship visits.</p>
             <AddStopPanel planId={planId} stops={stops} selectedDate={selectedDate}
               onClose={() => setAddStopOpen(false)}
               onAdded={() => { setAddStopOpen(false); loadPlan(selectedDate) }} />

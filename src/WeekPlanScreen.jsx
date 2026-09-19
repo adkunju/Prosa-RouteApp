@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import { useSettings } from './useSettings'
+import { fuzzyMatch } from './fuzzy'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
 import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package } from 'lucide-react'
 
@@ -45,6 +46,7 @@ export default function WeekPlanScreen() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [dueStores, setDueStores] = useState([]) // [{store_id, name, service_minutes, due_date, bearing, skuReqs:[{sku_id,name,qty}]}]
   const [assignment, setAssignment] = useState({}) // storeId -> dayIndex
   const { settings, loaded: settingsLoaded } = useSettings()
@@ -70,6 +72,7 @@ export default function WeekPlanScreen() {
   const [locked, setLocked] = useState({}) // storeId -> bool
   const [pickupDue, setPickupDue] = useState([])
   const [unscheduled, setUnscheduled] = useState([])
+  const [allStores, setAllStores] = useState([])
   const [showPickupDetail, setShowPickupDetail] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [stalePlans, setStalePlans] = useState([])
@@ -138,6 +141,7 @@ export default function WeekPlanScreen() {
       })
     }
 
+    setAllStores((stores || []).filter(s => !s.is_depot && !s.is_pickup))
     const depot = stores.find(s => s.is_depot)
     const matrixMap = {}
     matrix.forEach(m => { matrixMap[`${m.from_store_id}_${m.to_store_id}`] = m.seconds })
@@ -335,10 +339,11 @@ export default function WeekPlanScreen() {
           // Still need depot + matrix even on cache restore
           ;(async () => {
           const [{ data: storesData }, { data: matrixData }] = await Promise.all([
-            supabase.from('stores').select('id, is_depot').eq('is_active', true),
+            supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup').eq('is_active', true),
             supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds, meters'),
           ])
           const depot = (storesData || []).find(s => s.is_depot)
+          setAllStores((storesData || []).filter(s => !s.is_depot && !s.is_pickup))
           if (depot) setDepotId(depot.id)
           const mm = {}, ms = {}
           ;(matrixData || []).forEach(r => {
@@ -376,6 +381,16 @@ export default function WeekPlanScreen() {
 
   function moveStore(storeId, newDay) {
     setAssignment(a => ({ ...a, [storeId]: newDay }))
+    setHasUnsavedChanges(true)
+    setSaved(false)
+  }
+
+  function skipStore(store) {
+    setDueStores(ds => ds.filter(s => s.store_id !== store.store_id))
+    setUnscheduled(u => [...u, { ...store, skipReason: 'Manually skipped' }])
+    setAssignment(a => { const n = { ...a }; delete n[store.store_id]; return n })
+    setHasUnsavedChanges(true)
+    setSaved(false)
   }
 
   function toggleLock(storeId) {
@@ -504,6 +519,8 @@ export default function WeekPlanScreen() {
       }
     }
     setResetting(false)
+    setHasUnsavedChanges(false)
+    setSaved(false)
     load() // recompute from scratch
   }
 
@@ -591,7 +608,8 @@ export default function WeekPlanScreen() {
 
     setSaving(false)
     setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setHasUnsavedChanges(false)
+    setTimeout(() => setSaved(false), 3000)
   }
 
   return (
@@ -662,6 +680,33 @@ export default function WeekPlanScreen() {
           </div>
         )}
 
+        {!loading && (() => {
+          // Overallocation check per SKU
+          const overallocatedSkus = Object.entries(availableStock).filter(([skuId, total]) => {
+            const totalWithSpare = total + (spareStock[skuId] || 0)
+            const allocated = dueStores.reduce((n, s) => {
+              const key = `${s.store_id}-${skuId}`
+              return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0))
+            }, 0)
+            return allocated > totalWithSpare
+          })
+          if (!overallocatedSkus.length) return null
+          return (
+            <div className="mx-4 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
+              <div className="text-red-400 text-xs font-semibold mb-1">⚠ Stock overallocated</div>
+              {overallocatedSkus.map(([skuId, total]) => {
+                const totalWithSpare = total + (spareStock[skuId] || 0)
+                const allocated = dueStores.reduce((n, s) => {
+                  const key = `${s.store_id}-${skuId}`
+                  return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0))
+                }, 0)
+                const skuName = dueStores.flatMap(s => s.skuReqs).find(r => r.sku_id === skuId)?.name || skuId
+                return <div key={skuId} className="text-red-300 text-xs">{skuName}: {allocated} allocated · {totalWithSpare} available · reduce by {allocated - totalWithSpare}</div>
+              })}
+            </div>
+          )
+        })()}
+
         {!loading && Object.keys(availableStock).length > 0 && (() => {
           // Build sku name map from dueStores
           const skuNames = {}
@@ -671,28 +716,29 @@ export default function WeekPlanScreen() {
             <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
               <div className="text-[var(--text-muted)] text-xs mb-2">Stock in hand · allocated to schedule</div>
               {Object.entries(availableStock).map(([skuId, total]) => {
-                // Sum only the rationied quantities (after stock capping)
-                const allocated = Math.min(total,
-                  dueStores.reduce((n, s) => n + (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0), 0)
+                const spare = spareStock[skuId] || 0
+                const totalAllocated =
+                  dueStores.reduce((n, s) => {
+                    const key = `${s.store_id}-${skuId}`
+                    return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0))
+                  }, 0)
                   + pickupDue.reduce((n, s) => n + (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0), 0)
-                )
-                const remaining = total - allocated
+                const regularUsed = Math.min(totalAllocated, total)
+                const spareUsed = Math.max(0, totalAllocated - total)
+                const regularLeft = total - regularUsed
+                const spareLeft = spare - spareUsed
                 return (
                   <div key={skuId} className="flex justify-between text-sm py-1 border-t border-[var(--bg-input)]/30 first:border-0">
                     <span className="text-[var(--text-secondary)]">{skuNames[skuId] || 'Unknown'}</span>
                     <div className="text-[var(--text-muted2)] text-xs text-right">
-                      <div>{allocated}/{total} allocated · <span className={remaining === 0 ? 'text-[var(--accent)]' : remaining < 0 ? 'text-red-400' : 'text-[var(--text-muted)]'}>{remaining} left</span></div>
-                      {(spareStock[skuId] || 0) > 0 && (() => {
-                        const spareUsed = dueStores.reduce((n, s) => {
-                          const key = `${s.store_id}-${skuId}`
-                          const base = s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0
-                          const override = qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : base
-                          return n + Math.max(0, override - base)
-                        }, 0)
-                        const spareTotal = spareStock[skuId] || 0
-                        const spareLeft = spareTotal - spareUsed
-                        return <div className={spareUsed > spareTotal ? 'text-red-400' : 'text-[var(--text-gold)]'}>{spareUsed}/{spareTotal} spare · {spareLeft} left</div>
-                      })()}
+                      <div>
+                        {regularUsed}/{total} allocated · <span className={regularLeft === 0 ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}>{regularLeft} left</span>
+                      </div>
+                      {spare > 0 && (
+                        <div className={spareUsed > spare ? 'text-red-400' : spareUsed > 0 ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted2)]'}>
+                          {spareUsed}/{spare} spare · {spareLeft} left
+                        </div>
+                      )}
                     </div>
                   </div>
                 )
@@ -788,16 +834,23 @@ export default function WeekPlanScreen() {
                           return (
                             <div key={r.sku_id} className="flex items-center gap-1 bg-[var(--bg-input)]/40 rounded-lg px-1.5 py-0.5">
                               <span className="text-[var(--text-muted2)] text-[10px]">{r.name.split('/')[0].trim()}</span>
-                              <button onClick={() => setQtyOverrides(o => ({ ...o, [key]: Math.max(0, qty - 1) }))}
+                              <button onClick={() => { setQtyOverrides(o => ({ ...o, [key]: Math.max(0, qty - 1) })); setHasUnsavedChanges(true); setSaved(false) }}
                                 className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] w-4 h-4 flex items-center justify-center">−</button>
                               <span className={`text-xs font-medium w-5 text-center ${qty === 0 ? 'text-[var(--text-muted2)]' : 'text-[var(--text-primary)]'}`}>{qty}</span>
-                              <button onClick={() => setQtyOverrides(o => ({ ...o, [key]: qty + 1 }))}
+                              <button onClick={() => { setQtyOverrides(o => ({ ...o, [key]: qty + 1 })); setHasUnsavedChanges(true); setSaved(false) }}
                                 className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] w-4 h-4 flex items-center justify-center">+</button>
                             </div>
                           )
                         })}
                       </div>
                     )}
+                    {/* Skip button */}
+                    <div className="ml-5 mt-1.5">
+                      <button onClick={() => skipStore(s)}
+                        className="text-[var(--text-muted2)] hover:text-red-400 text-xs transition-colors">
+                        Skip this store
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -808,12 +861,19 @@ export default function WeekPlanScreen() {
 
       {!loading && dueStores.length > 0 && (
         <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
+
           <button
-            onClick={() => saveWeekPlan()}
-            disabled={saving || saved}
-            className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors"
+            onClick={() => { if (hasUnsavedChanges) saveWeekPlan() }}
+            disabled={saving}
+            className={`w-full text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-all ${
+              saved
+                ? 'bg-green-600 hover:bg-green-700'
+                : hasUnsavedChanges
+                  ? 'bg-[var(--accent)] hover:bg-[var(--accent-hover)]'
+                  : 'bg-[var(--accent)]/30 cursor-default'
+            }`}
           >
-            {saved ? <><CheckCircle size={18} /> Week plan saved!</> : saving ? <><Loader2 size={16} className="animate-spin" /> Saving...</> : 'Save Week Plan'}
+            {saved ? <><CheckCircle size={18} /> Saved!</> : saving ? <><Loader2 size={16} className="animate-spin" /> Saving...</> : <>{hasUnsavedChanges && <AlertTriangle size={14} className="text-[var(--text-gold)]" />} Save Week Plan</>}
           </button>
         </div>
       )}
@@ -935,23 +995,38 @@ export default function WeekPlanScreen() {
               {(() => {
                 const selectedStore = unscheduled.find(s => s.store_id === addStoreQtys['_selected'])
                   || dueStores.find(s => s.store_id === addStoreQtys['_selected'])
+                  || (() => { const s = allStores.find(s => s.id === addStoreQtys['_selected']); return s ? { store_id: s.id, name: s.name, skuReqs: [], skipReason: null } : null })()
 
                 if (!selectedStore) {
-                  // Step 1: Search and pick a store
-                  const candidates = unscheduled.filter(s =>
-                    !addStoreQuery.trim() || s.name.toLowerCase().includes(addStoreQuery.toLowerCase())
-                  )
+                  // Step 1: Search and pick a store — show skipped + all active stores (not dropped)
+                  const scheduledIds = new Set(dueStores.map(s => s.store_id))
+                  const unscheduledIds = new Set(unscheduled.map(s => s.store_id))
+
+                  // Merge: skipped stores first (with reason), then all other active stores
+                  const otherStores = allStores
+                    .filter(s => !scheduledIds.has(s.id) && !unscheduledIds.has(s.id))
+                    .map(s => ({ store_id: s.id, name: s.name, skipReason: null, due_date: null, skuReqs: [] }))
+
+                  const allCandidates = [...unscheduled, ...otherStores]
+                  const q = addStoreQuery.trim()
+                  const candidates = q
+                    ? allCandidates.filter(s => fuzzyMatch(q, s.name))
+                    : allCandidates
+
                   return (
                     <>
                       <input autoFocus value={addStoreQuery} onChange={e => setAddStoreQuery(e.target.value)}
-                        placeholder="Search store..."
+                        placeholder="Search stores..."
                         className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-3" />
-                      {candidates.length === 0 && <p className="text-[var(--text-muted2)] text-xs text-center mt-4">No skipped stores match. These are stores due but not yet scheduled.</p>}
+                      {candidates.length === 0 && <p className="text-[var(--text-muted2)] text-xs text-center mt-4">No stores match.</p>}
                       {candidates.map(s => (
                         <button key={s.store_id} onClick={() => setAddStoreQtys(q => ({ '_selected': s.store_id }))}
                           className="w-full text-left bg-[var(--bg-input)]/40 hover:bg-[var(--bg-input)] rounded-xl px-4 py-3 mb-2 transition-colors">
                           <div className="text-[var(--text-primary)] text-sm font-medium">{s.name}</div>
-                          <div className="text-[var(--text-muted2)] text-xs mt-0.5">{s.skipReason} · due {s.due_date}</div>
+                          <div className="text-[var(--text-muted2)] text-xs mt-0.5">
+                            {s.skipReason ? <span className="text-[var(--text-gold)]">{s.skipReason}</span> : <span>Not in this week's schedule</span>}
+                            {s.due_date && <span> · due {s.due_date}</span>}
+                          </div>
                         </button>
                       ))}
                     </>
@@ -979,12 +1054,14 @@ export default function WeekPlanScreen() {
                     {/* Added SKU lines */}
                     {addedKeys.map(key => {
                       const skuId = key.replace('sku-', '')
-                      const unalloc = Math.max(0, (availableStock[skuId] || 0) - dueStores.reduce((n, s2) => {
+                      const totalRegular = availableStock[skuId] || 0
+                      const allocated = dueStores.reduce((n, s2) => {
                         const k2 = `${s2.store_id}-${skuId}`
                         return n + (qtyOverrides[k2] !== undefined ? Number(qtyOverrides[k2]) : (s2.skuReqs.find(r2 => r2.sku_id === skuId)?.qty || 0))
-                      }, 0))
+                      }, 0)
+                      const unalloc = totalRegular - allocated
                       const spare = spareStock[skuId] || 0
-                      const maxQty = unalloc + spare
+                      const maxQty = totalRegular + spare // allow using all stock, warn if overallocating
                       return (
                         <div key={key} className="bg-[var(--bg-input)]/40 rounded-xl p-3 mb-2">
                           <div className="flex items-center justify-between mb-1">
@@ -992,23 +1069,22 @@ export default function WeekPlanScreen() {
                             <button onClick={() => setAddStoreQtys(q => { const n = {...q}; delete n[key]; return n })}
                               className="text-[var(--text-muted2)] hover:text-red-400 text-xs">✕</button>
                           </div>
-                          <div className="flex gap-3 text-xs text-[var(--text-muted2)] mb-2">
-                            <span>Allocated: <span className="text-[var(--text-secondary)]">{unalloc} pcs</span></span>
+                          <div className="flex gap-3 text-xs text-[var(--text-muted2)] mb-2 flex-wrap">
+                            <span>
+                              Main batch: <span className="text-[var(--text-secondary)]">{totalRegular} pcs</span>
+                              {unalloc > 0
+                                ? <span className="text-[var(--accent)]"> · {unalloc} free</span>
+                                : <span className="text-red-400"> · fully allocated</span>}
+                            </span>
                             {spare > 0 && <span>Spare: <span className="text-[var(--text-gold)]">{spare} pcs</span></span>}
                           </div>
-                          {maxQty > 0 ? (
-                            <div className="flex items-center gap-2">
-                              <button onClick={() => setAddStoreQtys(q => ({ ...q, [key]: Math.max(0, (Number(q[key]) || 0) - 1) }))}
-                                className="w-9 h-9 rounded-xl bg-[var(--bg-input)] text-[var(--text-primary)] text-lg font-bold flex items-center justify-center hover:bg-[var(--accent)] hover:text-white transition-colors">−</button>
-                              <span className="flex-1 text-center text-[var(--text-primary)] text-base font-semibold">
-                                {addStoreQtys[key] || 0}
-                              </span>
-                              <button onClick={() => setAddStoreQtys(q => ({ ...q, [key]: Math.min(maxQty, (Number(q[key]) || 0) + 1) }))}
-                                className="w-9 h-9 rounded-xl bg-[var(--bg-input)] text-[var(--text-primary)] text-lg font-bold flex items-center justify-center hover:bg-[var(--accent)] hover:text-white transition-colors">+</button>
-                            </div>
-                          ) : (
-                            <p className="text-[var(--text-muted2)] text-xs italic">No stock — visit only</p>
-                          )}
+                          <input
+                            type="number"
+                            min="0"
+                            value={addStoreQtys[key] || ''}
+                            placeholder="0"
+                            onChange={e => setAddStoreQtys(q => ({ ...q, [key]: e.target.value }))}
+                            className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-4 py-2.5 text-base font-semibold outline-none focus:ring-2 focus:ring-[var(--accent)] text-center" />
                         </div>
                       )
                     })}
@@ -1088,8 +1164,8 @@ export default function WeekPlanScreen() {
                       setUnscheduled(prev => prev.filter(x => x.store_id !== selectedStore.store_id))
                       setShowAddStore(false)
                       setAddStoreQtys({})
-                      // persist immediately so page refresh doesn't lose the stop
-                      await saveWeekPlan(nextDueStores, nextAssignment, nextOverrides)
+                      setHasUnsavedChanges(true)
+                      setSaved(false)
                     }}
                       className="w-full py-3 rounded-xl bg-[var(--accent)] text-white text-sm font-semibold">
                       {addedKeys.some(k => Number(addStoreQtys[k]) > 0) ? 'Confirm delivery' : 'Add as visit only'}
