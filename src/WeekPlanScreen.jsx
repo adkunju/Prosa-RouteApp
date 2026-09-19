@@ -638,6 +638,33 @@ export default function WeekPlanScreen() {
         })()}
       </div>
 
+      {/* Sticky overallocation banner — outside scroll so always visible */}
+      {!loading && (() => {
+        const overallocatedSkus = Object.entries(availableStock).filter(([skuId, total]) => {
+          const totalWithSpare = total + (spareStock[skuId] || 0)
+          const allocated = dueStores.reduce((n, s) => {
+            const key = `${s.store_id}-${skuId}`
+            return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0))
+          }, 0)
+          return allocated > totalWithSpare
+        })
+        if (!overallocatedSkus.length) return null
+        return (
+          <div className="mx-3 mt-2 bg-red-500/10 border border-red-500/30 rounded-xl px-3 py-2 shrink-0">
+            <div className="text-red-400 text-xs font-semibold mb-0.5">⚠ Stock overallocated</div>
+            {overallocatedSkus.map(([skuId, total]) => {
+              const totalWithSpare = total + (spareStock[skuId] || 0)
+              const allocated = dueStores.reduce((n, s) => {
+                const key = `${s.store_id}-${skuId}`
+                return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0))
+              }, 0)
+              const skuName = dueStores.flatMap(s => s.skuReqs).find(r => r.sku_id === skuId)?.name || skuId
+              return <div key={skuId} className="text-red-300 text-xs">{skuName}: {allocated} allocated · {totalWithSpare} available · reduce by {allocated - totalWithSpare}</div>
+            })}
+          </div>
+        )
+      })()}
+
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-5">
         {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Computing assignments...</div>}
 
@@ -679,33 +706,6 @@ export default function WeekPlanScreen() {
             </div>
           </div>
         )}
-
-        {!loading && (() => {
-          // Overallocation check per SKU
-          const overallocatedSkus = Object.entries(availableStock).filter(([skuId, total]) => {
-            const totalWithSpare = total + (spareStock[skuId] || 0)
-            const allocated = dueStores.reduce((n, s) => {
-              const key = `${s.store_id}-${skuId}`
-              return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0))
-            }, 0)
-            return allocated > totalWithSpare
-          })
-          if (!overallocatedSkus.length) return null
-          return (
-            <div className="mx-4 mb-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
-              <div className="text-red-400 text-xs font-semibold mb-1">⚠ Stock overallocated</div>
-              {overallocatedSkus.map(([skuId, total]) => {
-                const totalWithSpare = total + (spareStock[skuId] || 0)
-                const allocated = dueStores.reduce((n, s) => {
-                  const key = `${s.store_id}-${skuId}`
-                  return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0))
-                }, 0)
-                const skuName = dueStores.flatMap(s => s.skuReqs).find(r => r.sku_id === skuId)?.name || skuId
-                return <div key={skuId} className="text-red-300 text-xs">{skuName}: {allocated} allocated · {totalWithSpare} available · reduce by {allocated - totalWithSpare}</div>
-              })}
-            </div>
-          )
-        })()}
 
         {!loading && Object.keys(availableStock).length > 0 && (() => {
           // Build sku name map from dueStores
