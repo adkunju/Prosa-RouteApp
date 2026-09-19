@@ -9,13 +9,15 @@ import SalesScreen from './SalesScreen'
 import WeekPlanScreen from './WeekPlanScreen'
 import LogScreen from './LogScreen'
 import SettingsScreen from './SettingsScreen'
+import ProspectFinderScreen from './ProspectFinderScreen'
 import { useTheme } from './useTheme'
-import { LayoutDashboard, CalendarDays, ClipboardList, Truck, Settings, BarChart2 } from 'lucide-react'
+import { LayoutDashboard, CalendarDays, ClipboardList, Truck, Settings, BarChart2, Search } from 'lucide-react'
 
 const NAV = [
   { key: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
   { key: 'plan',      label: 'Plan',      Icon: CalendarDays },
   { key: 'delivery',  label: 'Delivery',  Icon: Truck },
+  { key: 'find',      label: 'Find',      Icon: Search },
   { key: 'sales',     label: 'Sales',     Icon: BarChart2 },
   { key: 'settings',  label: 'Settings',  Icon: Settings },
 ]
@@ -90,6 +92,7 @@ function Shell() {
         {screen === 'dashboard' && <DashboardScreen />}
         {screen === 'plan'      && <PlanHub />}
         {screen === 'delivery'  && <PlanViewScreen />}
+        {screen === 'find'      && <ProspectFinderScreen />}
         {screen === 'sales'     && <SalesScreen />}
         {screen === 'settings'  && <SettingsScreen theme={theme} setTheme={setTheme} />}
       </main>
