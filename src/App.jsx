@@ -21,7 +21,7 @@ const NAV = [
 ]
 
 function PlanHub() {
-  const [tab, setTab] = useState('allocation')
+  const [tab, setTab] = useState('week')
   useEffect(() => {
     const go = e => {
       if (e.detail?.screen) return // handled by Shell
