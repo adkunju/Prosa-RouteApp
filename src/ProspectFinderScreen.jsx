@@ -16,6 +16,7 @@ const CHAINS = [
   'q-mart', 'ratnadeep', "namdhari's", 'namdharis', 'heritage fresh', 'easyday',
   'metro cash', 'fabmall', 'big bazaar', 'milma', 'consumerfed', 'triveni',
   'popular bazaar', 'rp mall', 'kalyan', 'mymoon', 'margin free',
+  'instamart', 'we mart', 'wemart', 'miniso',
 ]
 
 function distKm(lat1, lng1, lat2, lng2) {
@@ -36,8 +37,30 @@ function isChain(name, custom) {
   if (custom && custom.some(c => c && n.includes(c))) return true
   return false
 }
-function brandRoot(name) {
-  return (name || '').split(/[-,–]/)[0].trim().toLowerCase()
+function wordSuggestions(name) {
+  const words = (name || '').replace(/[(),.]/g, '').split(/\s+/).filter(Boolean)
+  const stopwords = new Set(['the','a','an','we','my','and','of','for','on','in','to','&','-'])
+  const seen = new Set()
+  const out = []
+  for (const w of words) {
+    const wl = w.toLowerCase()
+    if (wl.length < 3) continue
+    if (stopwords.has(wl)) continue
+    if (seen.has(wl)) continue
+    seen.add(wl)
+    out.push(wl)
+  }
+  return out
+}
+function brandGuess(name) {
+  const words = (name || '').replace(/[(),]/g, '').split(/\s+/).filter(Boolean)
+  if (words.length === 0) return ''
+  const stopwords = ['the', 'a', 'an', 'we', 'my']
+  const first = words[0].toLowerCase()
+  if (first.length <= 3 || stopwords.includes(first)) {
+    return words.slice(0, 2).join(' ').toLowerCase()
+  }
+  return first
 }
 
 export default function ProspectFinderScreen() {
@@ -57,6 +80,9 @@ export default function ProspectFinderScreen() {
   const [customChains, setCustomChains] = useState([])
   const [toast, setToast] = useState(null)
   const [showManage, setShowManage] = useState(false)
+  const [hidePicker, setHidePicker] = useState(null) // { place, custom }
+  const [crossCheck, setCrossCheck] = useState(null) // { term, count, capped, names, error }
+  const [crossCheckLoading, setCrossCheckLoading] = useState(false)
   const toastTimer = useRef(null)
 
   useEffect(() => {
@@ -190,17 +216,17 @@ export default function ProspectFinderScreen() {
     try { localStorage.setItem(CUSTOM_CHAINS_KEY, JSON.stringify(next)) } catch {}
   }
 
-  function markAsChain(p) {
-    const root = brandRoot(p.name)
-    if (!root || root.length < 3) return
-    if (customChains.includes(root)) return
-    saveCustomChains([...customChains, root])
+  function hideBrand(brandStr) {
+    const b = (brandStr || '').trim().toLowerCase()
+    if (!b || b.length < 3) return
+    if (customChains.includes(b)) return
+    saveCustomChains([...customChains, b])
     if (toastTimer.current) clearTimeout(toastTimer.current)
     toastTimer.current = setTimeout(() => setToast(null), 5000)
-    setToast({ brand: root })
+    setToast({ brand: b })
   }
 
-  function undoLastChain() {
+  function undoLastHide() {
     if (!toast) return
     saveCustomChains(customChains.filter(c => c !== toast.brand))
     if (toastTimer.current) clearTimeout(toastTimer.current)
@@ -211,10 +237,43 @@ export default function ProspectFinderScreen() {
     saveCustomChains(customChains.filter(c => c !== brand))
   }
 
+  async function runCrossCheck(term) {
+    const t = (term || '').trim().toLowerCase()
+    if (!t || t.length < 3) return
+    setCrossCheckLoading(true)
+    try {
+      const res = await fetch(`${PLACES_URL}:searchText`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': KEY,
+          'X-Goog-FieldMask': 'places.displayName,places.formattedAddress',
+        },
+        body: JSON.stringify({ textQuery: t + ' Kerala India', maxResultCount: 20 })
+      })
+      if (!res.ok) throw new Error(`Kerala check failed: ${res.status}`)
+      const data = await res.json()
+      const matches = (data.places || []).filter(pl => (pl.displayName?.text || '').toLowerCase().includes(t))
+      setCrossCheck({ term: t, count: matches.length, capped: matches.length >= 20, names: matches.map(pl => ({ name: pl.displayName?.text || '', address: pl.formattedAddress || '' })) })
+    } catch (e) {
+      setCrossCheck({ term: t, error: e.message })
+    } finally { setCrossCheckLoading(false) }
+  }
+  function openHidePicker(p) {
+    setHidePicker({ place: p, custom: brandGuess(p.name) })
+  }
+
   const toggleType = t => setTypes(ts => ts.includes(t) ? ts.filter(x => x !== t) : [...ts, t])
 
   const chainCount = results.filter(r => isChain(r.name, customChains)).length
   const visibleResults = hideChains ? results.filter(p => !isChain(p.name, customChains)) : results
+
+  // Helpers for picker preview counts
+  const countMatches = sub => {
+    const s = (sub || '').trim().toLowerCase()
+    if (!s) return 0
+    return results.filter(r => r.name.toLowerCase().includes(s)).length
+  }
 
   return (
     <div className="flex-1 overflow-y-auto p-4 space-y-4 relative">
@@ -336,7 +395,7 @@ export default function ProspectFinderScreen() {
                     {p.existing ? <><Check size={12} /> Added</> : adding === p.place_id ? <Loader2 size={12} className="animate-spin" /> : <><Plus size={12} /> Prospect</>}
                   </button>
                   {!p.existing && !chain && (
-                    <button onClick={() => markAsChain(p)}
+                    <button onClick={() => openHidePicker(p)}
                       className="px-2.5 py-1 rounded-lg text-[10px] font-medium flex items-center gap-1 bg-white/5 text-[var(--text-muted2)] hover:bg-white/10">
                       <Ban size={10} /> Hide
                     </button>
@@ -354,13 +413,131 @@ export default function ProspectFinderScreen() {
         )}
       </div>
 
+      {/* Hide picker */}
+      {hidePicker && (() => {
+        const p = hidePicker.place
+        const full = p.name.toLowerCase()
+        const words = wordSuggestions(p.name)
+        const previewMatches = (sub) => {
+          const t = (sub || '').trim().toLowerCase()
+          if (!t || t.length < 3) return []
+          return results.filter(r => r.name.toLowerCase().includes(t))
+        }
+        const currentCustom = hidePicker.custom.trim().toLowerCase()
+        const currentMatches = previewMatches(currentCustom)
+        const ccMatchesTerm = crossCheck && crossCheck.term === currentCustom
+        return (
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center pb-28 sm:p-4" onClick={() => setHidePicker(null)}>
+            <div className="bg-[var(--bg-card)] w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl border border-white/10 flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+              <div className="p-4 border-b border-white/10 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-[var(--text-primary)] truncate">Hide "{p.name}"</div>
+                  <div className="text-[10px] text-[var(--text-muted2)] mt-0.5">Applies to this AND all future searches on this device</div>
+                </div>
+                <button onClick={() => setHidePicker(null)} className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0">
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="overflow-y-auto flex-1 p-4 space-y-3">
+                <button onClick={() => { hideBrand(full); setHidePicker(null) }}
+                  className="w-full flex items-center justify-between gap-3 px-3 py-3 bg-[var(--bg-input)] rounded-lg hover:bg-white/10 text-left">
+                  <div className="min-w-0">
+                    <div className="text-sm text-[var(--text-primary)]">Just this outlet</div>
+                    <div className="text-xs text-[var(--text-muted2)] truncate">"{full}"</div>
+                  </div>
+                  <span className="text-xs text-[var(--text-muted)] shrink-0">{previewMatches(full).length} here</span>
+                </button>
+
+                {words.length > 0 && (
+                  <div className="p-3 bg-[var(--bg-input)] rounded-lg">
+                    <div className="text-xs text-[var(--text-muted2)] mb-2">Or hide by a word from the name — count is matches in THIS list only:</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {words.map(w => {
+                        const c = previewMatches(w).length
+                        const active = currentCustom === w
+                        return (
+                          <button key={w}
+                            onClick={() => setHidePicker({ ...hidePicker, custom: w })}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 border transition-colors ${active ? 'bg-[var(--accent)]/15 text-[var(--text-accent)] border-[var(--accent)]/40' : 'bg-[var(--bg-card)] text-[var(--text-secondary)] border-white/10 hover:bg-white/5'}`}>
+                            <span>{w}</span>
+                            <span className={active ? 'text-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}>{c}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="p-3 bg-[var(--bg-input)] rounded-lg">
+                  <div className="text-sm text-[var(--text-primary)] mb-2">Custom substring</div>
+                  <div className="flex gap-2">
+                    <input value={hidePicker.custom}
+                      onChange={e => setHidePicker({ ...hidePicker, custom: e.target.value })}
+                      placeholder="text to match"
+                      className="flex-1 px-2 py-1.5 bg-[var(--bg-card)] rounded text-sm text-[var(--text-primary)] outline-none border border-white/10 focus:border-[var(--accent)]/40" />
+                    <button onClick={() => { hideBrand(hidePicker.custom); setHidePicker(null) }}
+                      disabled={!currentCustom || currentCustom.length < 3}
+                      className="px-3 py-1.5 rounded bg-[var(--accent)]/15 text-[var(--text-accent)] border border-[var(--accent)]/30 text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed">
+                      Hide
+                    </button>
+                  </div>
+                </div>
+
+                {currentCustom.length >= 3 && (
+                  <div className="px-3 py-2 border border-white/10 rounded-lg bg-[var(--bg-input)]/40 space-y-2">
+                    <div className="text-xs text-[var(--text-muted2)]">
+                      <span className="text-[var(--text-secondary)] font-medium">{currentMatches.length}</span> in these results:
+                    </div>
+                    {currentMatches.length > 0 && (
+                      <div className="space-y-0.5">
+                        {currentMatches.slice(0, 5).map(m => (
+                          <div key={m.place_id} className="text-xs text-[var(--text-secondary)] truncate">• {m.name}</div>
+                        ))}
+                        {currentMatches.length > 5 && (
+                          <div className="text-xs text-[var(--text-muted2)]">…and {currentMatches.length - 5} more</div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="pt-2 border-t border-white/5">
+                      {!ccMatchesTerm ? (
+                        <button onClick={() => runCrossCheck(currentCustom)} disabled={crossCheckLoading}
+                          className="text-xs text-[var(--text-accent)] hover:underline flex items-center gap-1 disabled:opacity-50">
+                          {crossCheckLoading
+                            ? <><Loader2 size={11} className="animate-spin" /> Checking across Kerala…</>
+                            : <><Search size={11} /> Check "{currentCustom}" across Kerala (1 API call)</>}
+                        </button>
+                      ) : crossCheck.error ? (
+                        <div className="text-xs text-red-400">{crossCheck.error}</div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="text-xs text-[var(--text-muted2)]">
+                            <span className="text-[var(--text-secondary)] font-medium">{crossCheck.count}{crossCheck.capped ? '+' : ''}</span> "{crossCheck.term}" outlets found in Kerala{crossCheck.capped ? ' (Google caps at 20 — likely more)' : ''}:
+                          </div>
+                          {crossCheck.names.slice(0, 8).map((n, i) => (
+                            <div key={i} className="text-xs text-[var(--text-secondary)] truncate" title={n.address}>• {n.name}</div>
+                          ))}
+                          {crossCheck.names.length > 8 && (
+                            <div className="text-xs text-[var(--text-muted2)]">…and {crossCheck.names.length - 8} more</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Undo toast */}
       {toast && (
         <div className="fixed bottom-24 left-4 right-4 max-w-md mx-auto z-50 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-[var(--bg-card)] border border-white/15 shadow-[0_8px_32px_rgba(0,0,0,0.4)] backdrop-blur-xl">
           <span className="text-xs text-[var(--text-secondary)] truncate">
-            Hidden as chain: <span className="text-[var(--text-primary)] font-medium">{toast.brand}</span>
+            Hidden: <span className="text-[var(--text-primary)] font-medium">{toast.brand}</span>
           </span>
-          <button onClick={undoLastChain}
+          <button onClick={undoLastHide}
             className="shrink-0 text-xs font-semibold text-[var(--text-accent)] hover:underline px-2">
             UNDO
           </button>
@@ -369,7 +546,7 @@ export default function ProspectFinderScreen() {
 
       {/* Manage sheet */}
       {showManage && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => setShowManage(false)}>
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center pb-28 sm:p-4" onClick={() => setShowManage(false)}>
           <div className="bg-[var(--bg-card)] w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl border border-white/10 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="p-4 border-b border-white/10 flex items-center justify-between">
               <div className="text-sm font-semibold text-[var(--text-primary)]">Hidden chains</div>
