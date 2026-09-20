@@ -18,57 +18,69 @@ function GrowthBadge({ g }) {
 
 function StoreCard({ s, phones, onChanged, position }) {
   const dormant = s.days_since_visit > 14
+  const highReturns = Number(s.return_pct) > 20
+  const bigDrop = s.growth_pct !== null && Number(s.growth_pct) <= -30 && s.visit_count >= 5
+  const needsAttention = dormant || highReturns || bigDrop
+  const distance = position && s._coords ? haversineKm(position.lat, position.lng, s._coords.lat, s._coords.lng).toFixed(1) : null
+  const hasReturns = s.return_pct !== null && Number(s.return_pct) > 0
+  const hasWaste = s.waste_value > 0
   return (
-    <div className={`bg-[var(--bg-card)]/60 backdrop-blur-xl border rounded-2xl p-4 ${dormant ? 'border-[var(--text-gold)]/30' : 'border-[var(--bg-input)]/40'}`}>
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[var(--text-primary)] text-sm font-medium truncate">{s.name}</span>
-            {s.is_pickup && <span className="text-[var(--text-muted2)] text-[10px] shrink-0">pickup</span>}
-            <PipelineTag storeId={s.store_id}
-              status={s.pipeline_status || 'prospect'}
-              updatedBy={s.pipeline_updated_by} size="xs"
-              onChanged={onChanged} />
+    <div className={`bg-[var(--bg-card)]/60 backdrop-blur-xl border rounded-2xl overflow-hidden shrink-0 ${needsAttention ? 'border-[var(--text-gold)]/40' : 'border-[var(--bg-input)]/40'}`}>
+      {needsAttention && <div className="h-0.5 bg-gradient-to-r from-[var(--text-gold)]/80 to-transparent" />}
+      <div className="p-4 space-y-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[var(--text-primary)] text-sm font-medium truncate">{s.name}</span>
+              {s.is_pickup && <span className="text-[var(--text-muted2)] text-[10px] shrink-0">pickup</span>}
+              <PipelineTag storeId={s.store_id}
+                status={s.pipeline_status || 'prospect'}
+                updatedBy={s.pipeline_updated_by} size="xs"
+                onChanged={onChanged} />
+            </div>
+            <div className="text-[var(--text-muted2)] text-xs mt-0.5 flex items-center gap-1.5 flex-wrap">
+              {distance !== null && (
+                <>
+                  <span>{distance} km</span>
+                  <a href={`https://www.google.com/maps/search/?api=1&query=${s._coords.lat},${s._coords.lng}`}
+                    target="_blank" rel="noopener noreferrer"
+                    onClick={e => e.stopPropagation()}
+                    className="text-[var(--accent)]">📍</a>
+                  <span className="opacity-50">·</span>
+                </>
+              )}
+              <span className={dormant ? 'text-[var(--text-gold)]' : ''}>
+                {s.last_visit ? `${s.days_since_visit}d ago` : 'never delivered'}
+              </span>
+              <span className="opacity-50">·</span>
+              <span>{s.visit_count} visits</span>
+            </div>
           </div>
-          <div className="text-[var(--text-muted2)] text-xs mt-0.5">
-            {s.visit_count} deliveries ·
-            {s.last_visit ? ` last ${s.days_since_visit}d ago` : ' never delivered'}
-            {position && s._coords && (
-              <span className="text-[var(--text-muted2)]">
-                {' · '}{haversineKm(position.lat, position.lng, s._coords.lat, s._coords.lng).toFixed(1)} km from here
-                <a href={`https://www.google.com/maps/search/?api=1&query=${s._coords.lat},${s._coords.lng}`}
-                  target="_blank" rel="noopener noreferrer"
-                  onClick={e => e.stopPropagation()}
-                  className="ml-1 text-[var(--accent)] hover:underline">📍</a>
+          <ContactButtons phone={phones[s.store_id]} size={13} />
+        </div>
+
+        <div className="flex items-baseline justify-between gap-3">
+          <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
+            <span className="text-[var(--text-primary)] text-2xl font-bold tracking-tight leading-none">{fmt(s.revenue_30d)}</span>
+            <span className="text-[var(--text-muted2)] text-[10px] uppercase tracking-wider">30d</span>
+            {Number(s.revenue) > Number(s.revenue_30d) && (
+              <span className="text-[var(--text-muted2)] text-[10px]">· {fmt(s.revenue)} total</span>
+            )}
+          </div>
+          <GrowthBadge g={s.growth_pct} />
+        </div>
+
+        {(hasReturns || hasWaste) && (
+          <div className="flex items-center gap-3 text-xs pt-1.5 border-t border-white/5 flex-wrap">
+            {hasReturns && (
+              <span className={highReturns ? 'text-red-400 font-medium' : 'text-[var(--text-muted2)]'}>
+                {highReturns && '⚠ '}{s.return_pct}% returns
               </span>
             )}
-
+            {hasWaste && (
+              <span className="text-[var(--text-muted2)]">₹{Number(s.waste_value).toLocaleString('en-IN')} waste</span>
+            )}
           </div>
-        </div>
-        <ContactButtons phone={phones[s.store_id]} size={13} />
-      </div>
-
-      <div className="grid grid-cols-3 gap-2 mb-2">
-        <div className="bg-[var(--bg-input)]/40 rounded-xl p-2.5">
-          <div className="text-[var(--text-muted2)] text-[10px] mb-0.5">Revenue</div>
-          <div className="text-[var(--text-primary)] text-sm font-semibold">{fmt(s.revenue)}</div>
-        </div>
-        <div className="bg-[var(--bg-input)]/40 rounded-xl p-2.5">
-          <div className="text-[var(--text-muted2)] text-[10px] mb-0.5">Last 30d</div>
-          <div className="text-[var(--text-primary)] text-sm font-semibold">{fmt(s.revenue_30d)}</div>
-        </div>
-        <div className="bg-[var(--bg-input)]/40 rounded-xl p-2.5">
-          <div className="text-[var(--text-muted2)] text-[10px] mb-0.5">Returns</div>
-          <div className={`text-sm font-semibold ${Number(s.return_pct) > 20 ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>
-            {s.return_pct !== null ? `${s.return_pct}%` : '—'}
-          </div>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <GrowthBadge g={s.growth_pct} />
-        {s.waste_value > 0 && (
-          <span className="text-[var(--text-muted2)] text-xs">waste {fmt(s.waste_value)}</span>
         )}
       </div>
     </div>
@@ -147,20 +159,20 @@ export default function SalesScreen() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="px-4 pt-4 pb-2 shrink-0">
-        <div className="grid grid-cols-3 gap-2 mb-4">
+        <div className="grid grid-cols-3 gap-2 mb-3">
           <button onClick={() => setShowSalesPopup(true)}
-            className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-3 text-left hover:border-[var(--accent)]/40 transition-colors">
-            <div className="text-[var(--text-muted2)] text-[10px] mb-1">Sales this month</div>
-            <div className="text-[var(--text-primary)] text-base font-bold">{fmt(monthRevenue)}</div>
+            className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-xl px-3 py-2 text-left hover:border-[var(--accent)]/40 transition-colors">
+            <div className="text-[var(--text-muted2)] text-[9px] uppercase tracking-wider">Month sales</div>
+            <div className="text-[var(--text-primary)] text-sm font-bold leading-tight mt-0.5">{fmt(monthRevenue)}</div>
           </button>
           <button onClick={() => setShowExpiryPopup(true)}
-            className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-3 text-left hover:border-[var(--accent)]/40 transition-colors">
-            <div className="text-[var(--text-muted2)] text-[10px] mb-1">Expiry this month</div>
-            <div className={`text-base font-bold ${Number(wasteRate) > 15 ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>{wasteRate}%</div>
+            className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-xl px-3 py-2 text-left hover:border-[var(--accent)]/40 transition-colors">
+            <div className="text-[var(--text-muted2)] text-[9px] uppercase tracking-wider">Waste rate</div>
+            <div className={`text-sm font-bold leading-tight mt-0.5 ${Number(wasteRate) > 15 ? 'text-red-400' : 'text-[var(--text-primary)]'}`}>{wasteRate}%</div>
           </button>
-          <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-3">
-            <div className="text-[var(--text-muted2)] text-[10px] mb-1">Attention</div>
-            <div className={`text-base font-bold ${attention.length > 0 ? 'text-[var(--text-gold)]' : 'text-[var(--text-primary)]'}`}>{attention.length} stores</div>
+          <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-xl px-3 py-2">
+            <div className="text-[var(--text-muted2)] text-[9px] uppercase tracking-wider">Attention</div>
+            <div className={`text-sm font-bold leading-tight mt-0.5 ${attention.length > 0 ? 'text-[var(--text-gold)]' : 'text-[var(--text-primary)]'}`}>{attention.length}</div>
           </div>
         </div>
 

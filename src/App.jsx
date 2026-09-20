@@ -17,7 +17,6 @@ const NAV = [
   { key: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
   { key: 'plan',      label: 'Plan',      Icon: CalendarDays },
   { key: 'delivery',  label: 'Delivery',  Icon: Truck },
-  { key: 'find',      label: 'Find',      Icon: Search },
   { key: 'sales',     label: 'Sales',     Icon: BarChart2 },
   { key: 'settings',  label: 'Settings',  Icon: Settings },
 ]
@@ -66,6 +65,26 @@ function PlanHub() {
   )
 }
 
+function SalesHub() {
+  const [tab, setTab] = useState('stores')
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex border-b border-[var(--bg-input)] shrink-0">
+        <button onClick={() => setTab('stores')}
+          className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'stores' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
+          Stores
+        </button>
+        <button onClick={() => setTab('find')}
+          className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'find' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
+          Find
+        </button>
+      </div>
+      {tab === 'stores' && <SalesScreen />}
+      {tab === 'find' && <ProspectFinderScreen />}
+    </div>
+  )
+}
+
 function Shell() {
   const [screen, setScreen] = useState('dashboard')
   const { theme, setTheme } = useTheme()
@@ -92,8 +111,7 @@ function Shell() {
         {screen === 'dashboard' && <DashboardScreen />}
         {screen === 'plan'      && <PlanHub />}
         {screen === 'delivery'  && <PlanViewScreen />}
-        {screen === 'find'      && <ProspectFinderScreen />}
-        {screen === 'sales'     && <SalesScreen />}
+        {screen === 'sales'     && <SalesHub />}
         {screen === 'settings'  && <SettingsScreen theme={theme} setTheme={setTheme} />}
       </main>
 
