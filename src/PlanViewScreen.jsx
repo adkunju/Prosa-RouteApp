@@ -504,7 +504,7 @@ export default function PlanViewScreen() {
 
     const { data } = await supabase
       .from('plan_stops')
-      .select('id, stop_order, store_id, locked, stores(id, name, pipeline_status), requirements(id, sku_id, proposed_qty, approved_qty, skus(name, shelf_life_days, min_delivery_qty))')
+      .select('id, stop_order, store_id, locked, stores(id, name, pipeline_status, place_id, lat, lng), requirements(id, sku_id, proposed_qty, approved_qty, skus(name, shelf_life_days, min_delivery_qty))')
       .eq('plan_id', plan.id)
       .order('stop_order')
 
@@ -586,17 +586,35 @@ export default function PlanViewScreen() {
     const live = liveCoordsOverride || liveCoords
     const shouldUseLive = forceLive !== undefined ? forceLive : useLiveOrigin
     const originId = shouldUseLive && live ? LIVE_ID : depot.id
+    // Find nearest cached waypoint to driver's live position (used by costFn for accurate first-leg estimation)
+    let liveNearestId = null
+    let liveNearestSec = 0
+    if (originId === LIVE_ID) {
+      let best = Infinity
+      const candidates = [...stops.map(s => s.store_id), depot.id]
+      for (const sid of candidates) {
+        const sc = storeCoords[sid]
+        if (!sc) continue
+        const d = haversineSec(live.lat, live.lng, sc.lat, sc.lng)
+        if (d < best) { best = d; liveNearestId = sid }
+      }
+      liveNearestSec = best === Infinity ? 0 : best
+    }
     const inputStops = stops.map((s, idx) => ({ store_id: s.store_id, locked: !!locked[s.store_id], origIndex: idx }))
     const costFn = (a, b) => {
-      if (a === LIVE_ID || b === LIVE_ID) {
-        const storeId = a === LIVE_ID ? b : a
-        const sc = storeCoords[storeId]
+      if (b === LIVE_ID) {
+        // Closing edge — driver ends at depot, not back at their current location
+        return cost(a, depot.id, useMetric)
+      }
+      if (a === LIVE_ID) {
+        // Opening edge — driver's current position to first stop (haversine)
+        const sc = storeCoords[b]
         if (!sc || !live) return 99999
         return haversineSec(live.lat, live.lng, sc.lat, sc.lng)
       }
       return cost(a, b, useMetric)
     }
-    const closeLoop = originId !== LIVE_ID
+    const closeLoop = true
     const newOrder = buildSequence(originId, inputStops, costFn, closeLoop)
     setOrder(newOrder)
     setMetric(useMetric)
@@ -605,6 +623,7 @@ export default function PlanViewScreen() {
   function toggleLiveOrigin() {
     const next = !useLiveOrigin
     setUseLiveOrigin(next)
+    try { localStorage.setItem('prosa_use_live_origin', next ? '1' : '0') } catch {}
     if (next) {
       navigator.geolocation?.getCurrentPosition(
         pos => {
@@ -612,7 +631,7 @@ export default function PlanViewScreen() {
           setLiveCoords(coords)
           optimize(metric, coords, true)
         },
-        () => { setUseLiveOrigin(false); alert('Could not get your location.') },
+        () => { setUseLiveOrigin(false); try { localStorage.setItem('prosa_use_live_origin', '0') } catch {}; alert('Could not get your location.') },
         { enableHighAccuracy: true, timeout: 8000 }
       )
     } else {
@@ -620,6 +639,37 @@ export default function PlanViewScreen() {
       optimize(metric, null, false)
     }
   }
+
+  function refreshLocation() {
+    if (!useLiveOrigin) return
+    navigator.geolocation?.getCurrentPosition(
+      pos => {
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+        setLiveCoords(coords)
+        optimize(metric, coords, true)
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 8000 }
+    )
+  }
+
+  // Fires immediately when Live turns on (via toggle or restore), then every 2.5 min
+  useEffect(() => {
+    if (!useLiveOrigin) return
+    refreshLocation()
+    const id = setInterval(() => { refreshLocation() }, 150000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line
+  }, [useLiveOrigin])
+
+  // Restore Live origin toggle from localStorage on mount (persists across app reopens)
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('prosa_use_live_origin') === '1') {
+        setUseLiveOrigin(true)
+      }
+    } catch {}
+  }, [])
 
   async function saveOrder() {
     setSaving(true)
@@ -1035,7 +1085,7 @@ export default function PlanViewScreen() {
                     <button onClick={() => toggleLock(stop.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
                       {locked[stop.store_id] ? <Lock size={13} className="text-[var(--text-gold)]" /> : <Unlock size={13} />}
                     </button>
-                    <span className="text-[var(--text-primary)] text-sm font-medium truncate">{stop.stores?.name}</span>
+                    <a href={stop.stores?.place_id ? `https://www.google.com/maps/place/?q=place_id:${stop.stores.place_id}` : (stop.stores?.lat && stop.stores?.lng) ? `https://www.google.com/maps/search/?api=1&query=${stop.stores.lat},${stop.stores.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.stores?.name || '')}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} className="text-[var(--text-primary)] text-sm font-medium truncate hover:text-[var(--text-accent)] hover:underline">{stop.stores?.name}</a>
                     {stop.stores?.pipeline_status && stop.stores.pipeline_status !== 'onboard' && (
                       <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 bg-[var(--accent)]/10 text-[var(--accent)]">
                         {stop.stores.pipeline_status}
@@ -1208,7 +1258,7 @@ export default function PlanViewScreen() {
       {activeCompleteStop && (
         <div className="absolute inset-0 bg-[var(--bg-root)]/70 backdrop-blur-2xl backdrop-saturate-150 flex flex-col">
           <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0 bg-[var(--bg-card)]/40 backdrop-blur-xl">
-            <h2 className="text-[var(--text-primary)] font-semibold">{activeCompleteStop.stores?.name}</h2>
+            <h2 className="text-[var(--text-primary)] font-semibold"><a href={activeCompleteStop.stores?.place_id ? `https://www.google.com/maps/place/?q=place_id:${activeCompleteStop.stores.place_id}` : (activeCompleteStop.stores?.lat && activeCompleteStop.stores?.lng) ? `https://www.google.com/maps/search/?api=1&query=${activeCompleteStop.stores.lat},${activeCompleteStop.stores.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(activeCompleteStop.stores?.name || '')}`} target="_blank" rel="noopener noreferrer" className="hover:text-[var(--text-accent)] hover:underline">{activeCompleteStop.stores?.name}</a></h2>
             <button onClick={() => setActiveCompleteStop(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
           </div>
           <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">

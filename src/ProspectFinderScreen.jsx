@@ -146,7 +146,11 @@ export default function ProspectFinderScreen() {
         if (!s || !s.lat || !s.lng) { setError('Pick a store with a location'); setBusy(false); return }
         lat = s.lat; lng = s.lng; label = s.name
       }
-      const nearRes = await fetch(`${PLACES_URL}:searchNearby`, {
+      // Text Search matches semantically — catches organic/health/specialty shops that
+      // Nearby Search would drop for having non-standard Google primary types
+      const typeTerms = { supermarket: 'supermarket', grocery_store: 'grocery', convenience_store: 'convenience store', bakery: 'bakery', cafe: 'cafe' }
+      const textQuery = types.map(t => typeTerms[t] || t).join(' OR ')
+      const nearRes = await fetch(`${PLACES_URL}:searchText`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -154,9 +158,9 @@ export default function ProspectFinderScreen() {
           'X-Goog-FieldMask': FIELD_MASK,
         },
         body: JSON.stringify({
-          includedTypes: types,
+          textQuery,
+          locationBias: { circle: { center: { latitude: lat, longitude: lng }, radius: radiusKm * 1000 } },
           maxResultCount: 20,
-          locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius: radiusKm * 1000 } },
         })
       })
       if (!nearRes.ok) {
@@ -179,6 +183,7 @@ export default function ProspectFinderScreen() {
           score: scoreOf(p),
           existing: existingPlaceIds.has(p.id),
         }))
+        .filter(p => p.distance_km <= radiusKm)
         .sort((a, b) => b.score - a.score)
       setResults(enriched)
       setCenter({ lat, lng, label })
@@ -370,7 +375,7 @@ export default function ProspectFinderScreen() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-[var(--text-primary)] text-sm truncate flex items-center gap-1.5">
-                    <span className="truncate">{p.name}</span>
+                    <a href={p.place_id && !p.place_id.startsWith('local-') ? `https://www.google.com/maps/place/?q=place_id:${p.place_id}` : `https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}`} target="_blank" rel="noopener noreferrer" className="truncate hover:text-[var(--text-accent)] hover:underline">{p.name}</a>
                     {chain && <span className="shrink-0 text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">CHAIN</span>}
                   </div>
                   <div className="text-xs text-[var(--text-muted2)] mt-0.5 flex items-center gap-1 truncate">
