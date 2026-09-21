@@ -375,7 +375,7 @@ export default function ProspectFinderScreen() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-[var(--text-primary)] text-sm truncate flex items-center gap-1.5">
-                    <a href={p.place_id && !p.place_id.startsWith('local-') ? `https://www.google.com/maps/place/?q=place_id:${p.place_id}` : `https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}`} target="_blank" rel="noopener noreferrer" className="truncate hover:text-[var(--text-accent)] hover:underline">{p.name}</a>
+                    <a href={p.place_id && !p.place_id.startsWith('local-') ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.name || "")}&query_place_id=${p.place_id}` : `https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lng}`} target="_blank" rel="noopener noreferrer" className="truncate hover:text-[var(--text-accent)] hover:underline">{p.name}</a>
                     {chain && <span className="shrink-0 text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">CHAIN</span>}
                   </div>
                   <div className="text-xs text-[var(--text-muted2)] mt-0.5 flex items-center gap-1 truncate">
