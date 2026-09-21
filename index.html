@@ -1,29 +1,57 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('theme') || 'light';
+          document.documentElement.setAttribute('data-theme', t);
+          document.documentElement.style.backgroundColor = t === 'dark' ? '#0d1210' : '#ffffff';
+          var m = document.createElement('meta');
+          m.name = 'theme-color';
+          m.content = t === 'dark' ? '#0d1210' : '#ffffff';
+          document.head.appendChild(m);
+        } catch(e) {}
+      })();
+    </script>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('theme') || 'light';
+          document.documentElement.setAttribute('data-theme', t);
+          document.documentElement.style.backgroundColor = t === 'dark' ? '#0d1210' : '#ffffff';
+          var m = document.createElement('meta');
+          m.name = 'theme-color';
+          m.content = t === 'dark' ? '#0d1210' : '#ffffff';
+          document.head.appendChild(m);
+        } catch(e) {}
+      })();
+    </script>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Prosa Route</title>
   
-    <style>
-      html, body { margin: 0; padding: 0; background: #0d1210; }
+        <style>
+      html, body { margin: 0; padding: 0; }
+      html[data-theme="dark"]  { background: #0d1210; --splash-bg: #0d1210; --glow: rgba(158, 234, 106, 0.55); }
+      html[data-theme="light"] { background: #ffffff; --splash-bg: #ffffff; --glow: rgba(94, 154, 65, 0.35); }
       #splash {
         position: fixed; inset: 0; z-index: 9999;
-        background: #0d1210;
+        background: var(--splash-bg);
         display: flex; align-items: center; justify-content: center;
         animation: splashFade 0.4s ease-in 2.6s forwards;
       }
       #splash img {
         width: 88px; height: 88px;
         animation: dosaIn 3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-        filter: drop-shadow(0 0 0 rgba(158, 234, 106, 0));
+        filter: drop-shadow(0 0 0 transparent);
       }
       @keyframes dosaIn {
         0%   { opacity: 0; transform: scale(0.4) rotate(-180deg); }
-        35%  { opacity: 1; transform: scale(1.15) rotate(10deg); filter: drop-shadow(0 0 18px rgba(158, 234, 106, 0.6)); }
-        55%  { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 12px rgba(158, 234, 106, 0.4)); }
-        100% { opacity: 1; transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 4px rgba(158, 234, 106, 0.2)); }
+        35%  { opacity: 1; transform: scale(1.15) rotate(10deg); filter: drop-shadow(0 0 18px var(--glow)); }
+        55%  { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 12px var(--glow)); }
+        100% { opacity: 1; transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 4px var(--glow)); }
       }
       @keyframes splashFade {
         to { opacity: 0; visibility: hidden; }
@@ -32,8 +60,7 @@
   </head>
   <body>
     <div id="splash"><img src="/favicon.png" alt="Prosa" /></div>
-    
-    <div id="root"></div>
+            <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
