@@ -5,8 +5,34 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Prosa Route</title>
+  
+    <style>
+      html, body { margin: 0; padding: 0; background: #0d1210; }
+      #splash {
+        position: fixed; inset: 0; z-index: 9999;
+        background: #0d1210;
+        display: flex; align-items: center; justify-content: center;
+        animation: splashFade 0.4s ease-in 2.6s forwards;
+      }
+      #splash img {
+        width: 88px; height: 88px;
+        animation: dosaIn 3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+        filter: drop-shadow(0 0 0 rgba(158, 234, 106, 0));
+      }
+      @keyframes dosaIn {
+        0%   { opacity: 0; transform: scale(0.4) rotate(-180deg); }
+        35%  { opacity: 1; transform: scale(1.15) rotate(10deg); filter: drop-shadow(0 0 18px rgba(158, 234, 106, 0.6)); }
+        55%  { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 12px rgba(158, 234, 106, 0.4)); }
+        100% { opacity: 1; transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 4px rgba(158, 234, 106, 0.2)); }
+      }
+      @keyframes splashFade {
+        to { opacity: 0; visibility: hidden; }
+      }
+    </style>
   </head>
   <body>
+    <div id="splash"><img src="/favicon.png" alt="Prosa" /></div>
+    
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
