@@ -5,6 +5,15 @@ import { X, Search, Loader2 } from 'lucide-react'
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 const today = () => localDate()
 
+
+// Token-based fuzzy match: each space-separated token must appear in name
+function _tokenMatch(q, name) {
+  const t = (q || '').trim().toLowerCase()
+  if (!t) return true
+  const n = (name || '').toLowerCase()
+  return t.split(/\s+/).filter(Boolean).every(x => n.includes(x))
+}
+
 export default function QuickDeliverModal({ onClose, onSaved }) {
   const [stores, setStores] = useState([])
   const [recentIds, setRecentIds] = useState([])
@@ -40,7 +49,7 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
 
   const recentStores = recentIds.slice(0, 8).map(id => stores.find(s => s.id === id)).filter(Boolean)
   const matches = query.trim()
-    ? stores.filter(s => s.name.toLowerCase().includes(query.trim().toLowerCase())).slice(0, 8)
+    ? stores.filter(s => _tokenMatch(query, s.name)).slice(0, 8)
     : recentStores
 
   function batchesFor(skuId) {

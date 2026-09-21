@@ -348,7 +348,12 @@ export default function ProspectFinderScreen() {
           <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted2)] pointer-events-none" />
           {anchorOpen && (() => {
             const q = anchorQuery.trim().toLowerCase()
-            const list = stores.filter(s => s.lat && s.lng).filter(s => !q || s.name.toLowerCase().includes(q))
+            const tokens = q ? q.split(/\s+/).filter(Boolean) : []
+            const list = stores.filter(s => s.lat && s.lng).filter(s => {
+              if (tokens.length === 0) return true
+              const n = s.name.toLowerCase()
+              return tokens.every(t => n.includes(t))
+            })
             return (
               <div className="absolute top-full mt-1 left-0 right-0 max-h-64 overflow-y-auto bg-[var(--bg-card)] border border-white/10 rounded-xl z-20 shadow-lg">
                 {list.length === 0 ? (

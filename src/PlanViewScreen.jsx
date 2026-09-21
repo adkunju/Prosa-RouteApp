@@ -217,8 +217,8 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
   }
 
   const qLower = q.toLowerCase()
-  const allMatches = q.length > 1 ? all.filter(s => s.name.toLowerCase().includes(qLower)).slice(0,10) : all.slice(0,10)
-  const prospectMatches = q.length > 1 ? prospects.filter(s => s.name.toLowerCase().includes(qLower)) : prospects
+  const allMatches = q.length > 1 ? all.filter(s => _tokenMatch(q, s.name)).slice(0,10) : all.slice(0,10)
+  const prospectMatches = q.length > 1 ? prospects.filter(s => _tokenMatch(q, s.name)) : prospects
 
   async function confirmAdd() {
     if (!preview || adding) return
@@ -402,6 +402,15 @@ function MapsCard({ links, compact }) {
       
     </div>
   )
+}
+
+
+// Token-based fuzzy match: each space-separated token must appear in name
+function _tokenMatch(q, name) {
+  const t = (q || '').trim().toLowerCase()
+  if (!t) return true
+  const n = (name || '').toLowerCase()
+  return t.split(/\s+/).filter(Boolean).every(x => n.includes(x))
 }
 
 export default function PlanViewScreen() {

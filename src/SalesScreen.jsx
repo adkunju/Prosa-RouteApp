@@ -89,6 +89,15 @@ function StoreCard({ s, phones, onChanged, position }) {
 
 const PIPELINE_OPTS = ['all','prospect','onboard','warm','cold','dormant','dropped']
 
+
+// Token-based fuzzy match: each space-separated token must appear in name
+function _tokenMatch(q, name) {
+  const t = (q || '').trim().toLowerCase()
+  if (!t) return true
+  const n = (name || '').toLowerCase()
+  return t.split(/\s+/).filter(Boolean).every(x => n.includes(x))
+}
+
 export default function SalesScreen() {
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(true)
@@ -136,7 +145,7 @@ export default function SalesScreen() {
 
   const filtered = data
     .filter(s => pipeline === 'all' || s.pipeline_status === pipeline)
-    .filter(s => !searchQ.trim() || s.name.toLowerCase().includes(searchQ.trim().toLowerCase()))
+    .filter(s => _tokenMatch(searchQ, s.name))
   const rows = [...filtered].sort((a, b) => {
     if (sortBy === 'name') return a.name.localeCompare(b.name)
     if (sortBy === 'last_delivery') return (b.days_since_visit ?? 9999) - (a.days_since_visit ?? 9999)
