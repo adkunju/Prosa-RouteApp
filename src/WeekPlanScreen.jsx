@@ -4,7 +4,7 @@ import { supabase } from './supabaseClient'
 import { useSettings } from './useSettings'
 import { fuzzyMatch } from './fuzzy'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
-import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package } from 'lucide-react'
+import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package, X } from 'lucide-react'
 
 const NUM_DAYS = 6
 const DAILY_BUDGET_MIN = 360 // 6 hours
@@ -49,7 +49,8 @@ export default function WeekPlanScreen() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [dueStores, setDueStores] = useState([]) // [{store_id, name, service_minutes, due_date, bearing, skuReqs:[{sku_id,name,qty}]}]
   const [assignment, setAssignment] = useState({}) // storeId -> dayIndex
-  const { settings, loaded: settingsLoaded } = useSettings()
+  const { settings, update: updateSettings, loaded: settingsLoaded } = useSettings()
+  const [dayPickerOpen, setDayPickerOpen] = useState(false)
   // Calendar dates for the next N delivery days, skipping weekdays that are
   // switched off in settings.
   const planDates = useMemo(() => {
@@ -616,9 +617,59 @@ export default function WeekPlanScreen() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
         <span className="text-[var(--text-muted)] text-sm flex items-center gap-1.5">
-          <Calendar size={14} className="text-[var(--text-accent)]" /> {NUM_DAYS}-day plan
+          <>
+          <button onClick={() => setDayPickerOpen(true)}
+            className="flex items-center gap-1 hover:bg-white/5 rounded-lg px-2 py-1 -mx-2 -my-1 transition-colors text-inherit">
+            <Calendar size={14} className="text-[var(--text-accent)]" /> {NUM_DAYS} Days
+          </button>
+          {dayPickerOpen && (() => {
+            const DAYS_LIST = [{n:1,l:'Mon'},{n:2,l:'Tue'},{n:3,l:'Wed'},{n:4,l:'Thu'},{n:5,l:'Fri'},{n:6,l:'Sat'},{n:7,l:'Sun'}]
+            const active = new Set(settings.delivery_weekdays || [1,2,3,4,5,6])
+            const toggle = (n) => {
+              const next = active.has(n) ? [...active].filter(x => x !== n) : [...active, n].sort((a,b) => a - b)
+              if (next.length === 0) return
+              updateSettings({ delivery_weekdays: next })
+            }
+            return (
+              <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4"
+                onClick={() => setDayPickerOpen(false)}>
+                <div className="bg-[var(--bg-card)] w-full max-w-sm rounded-2xl border border-white/10 flex flex-col shadow-2xl"
+                  onClick={e => e.stopPropagation()}>
+                  <div className="p-4 border-b border-white/10 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-[var(--text-primary)]">Delivery days</div>
+                      <div className="text-[10px] text-[var(--text-muted2)] mt-0.5">Days you run deliveries. Untick to skip.</div>
+                    </div>
+                    <button onClick={() => setDayPickerOpen(false)} className="p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0">
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="p-4">
+                    <div className="flex gap-1 justify-between">
+                      {DAYS_LIST.map(d => (
+                        <button key={d.n} onClick={() => toggle(d.n)}
+                          className={`flex-1 px-1 py-2 rounded-lg text-xs font-medium transition-colors ${active.has(d.n) ? 'bg-[var(--accent)]/25 text-[var(--text-accent)] border border-[var(--accent)]/40' : 'bg-[var(--bg-input)] text-[var(--text-muted2)] border border-transparent'}`}>
+                          {d.l}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="text-[10px] text-[var(--text-muted2)] mt-3 text-center">
+                      Saves automatically · Also updates Settings
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+          </>
         </span>
-        <span className="text-[var(--text-muted2)] text-xs">Max {DAILY_BUDGET_MIN / 60}h/day per route</span>
+        <span className="text-[var(--text-muted2)] text-xs flex items-center gap-0.5">
+          <select value={DAILY_BUDGET_MIN / 60} onChange={e => updateSettings({ daily_budget_min: +e.target.value * 60 })}
+            className="bg-transparent text-[var(--text-secondary)] outline-none border-none px-1 py-0 cursor-pointer font-medium">
+            {[4,5,6,7,8,9,10,12].map(n => <option key={n} value={n} className="bg-[var(--bg-card)] text-[var(--text-primary)]">{n}</option>)}
+          </select>
+          hrs/day
+        </span>
         {(() => {
           const today = new Date().toISOString().slice(0, 10)
           const weekStart = planDates[0] || today
@@ -707,13 +758,39 @@ export default function WeekPlanScreen() {
           </div>
         )}
 
+        {!loading && pickupDue.length > 0 && (
+          <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--text-gold)]/30 rounded-2xl p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--text-primary)] text-sm font-medium flex items-center gap-2">
+                <Package size={14} className="text-[var(--text-gold)]" /> Collecting from depot
+              </span>
+              <button onClick={() => setShowPickupDetail(true)}
+                className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs transition-colors">
+                {pickupDue.length} stores ›
+              </button>
+            </div>
+            <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40">
+              {Object.entries(pickupDue.reduce((acc, s) => {
+                s.skuReqs.forEach(r => { acc[r.name] = (acc[r.name] || 0) + r.qty })
+                return acc
+              }, {})).map(([name, qty]) => (
+                <div key={name} className="flex justify-between text-xs py-0.5">
+                  <span className="text-[var(--text-muted2)]">{name}</span>
+                  <span className="text-[var(--text-secondary)] font-medium">{qty} pcs</span>
+                </div>
+              ))}
+            </div>
+
+          </div>
+        )}
+
         {!loading && Object.keys(availableStock).length > 0 && (() => {
           // Build sku name map from dueStores
           const skuNames = {}
           dueStores.forEach(s => s.skuReqs.forEach(r => { skuNames[r.sku_id] = r.name }))
           pickupDue.forEach(s => s.skuReqs.forEach(r => { skuNames[r.sku_id] = r.name }))
           return (
-            <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
+            <div className="sticky top-0 z-20 bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 shadow-[0_10px_24px_-6px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(158,234,106,0.35)] ring-1 ring-[var(--accent)]/15">
               <div className="text-[var(--text-muted)] text-xs mb-2">Stock in hand · allocated to schedule</div>
               {Object.entries(availableStock).map(([skuId, total]) => {
                 const spare = spareStock[skuId] || 0
@@ -747,31 +824,6 @@ export default function WeekPlanScreen() {
           )
         })()}
 
-        {!loading && pickupDue.length > 0 && (
-          <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--text-gold)]/30 rounded-2xl p-4">
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--text-primary)] text-sm font-medium flex items-center gap-2">
-                <Package size={14} className="text-[var(--text-gold)]" /> Collecting from depot
-              </span>
-              <button onClick={() => setShowPickupDetail(true)}
-                className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs transition-colors">
-                {pickupDue.length} stores ›
-              </button>
-            </div>
-            <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40">
-              {Object.entries(pickupDue.reduce((acc, s) => {
-                s.skuReqs.forEach(r => { acc[r.name] = (acc[r.name] || 0) + r.qty })
-                return acc
-              }, {})).map(([name, qty]) => (
-                <div key={name} className="flex justify-between text-xs py-0.5">
-                  <span className="text-[var(--text-muted2)]">{name}</span>
-                  <span className="text-[var(--text-secondary)] font-medium">{qty} pcs</span>
-                </div>
-              ))}
-            </div>
-
-          </div>
-        )}
         {!loading && Array.from({ length: NUM_DAYS }).map((_, day) => {
           const stops = byDay[day]
           const mins = dayMinutes[day]
@@ -1201,5 +1253,6 @@ export default function WeekPlanScreen() {
         document.body
       )}
     </div>
+
   )
 }
