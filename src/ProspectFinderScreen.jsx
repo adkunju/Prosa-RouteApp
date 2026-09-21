@@ -26,6 +26,15 @@ function distKm(lat1, lng1, lat2, lng2) {
   const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2
   return 2 * R * Math.asin(Math.sqrt(a))
 }
+function bearingDeg(fromLat, fromLng, toLat, toLng) {
+  const p1 = fromLat * Math.PI / 180
+  const p2 = toLat * Math.PI / 180
+  const l1 = fromLng * Math.PI / 180
+  const l2 = toLng * Math.PI / 180
+  const y = Math.sin(l2 - l1) * Math.cos(p2)
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(l2 - l1)
+  return Math.round(((Math.atan2(y, x) * 180) / Math.PI + 360) % 360)
+}
 function scoreOf(p) {
   const r = p.rating || 0
   const n = p.userRatingCount || 0
@@ -84,7 +93,7 @@ export default function ProspectFinderScreen() {
   const [crossCheck, setCrossCheck] = useState(null) // { term, count, capped, names, error }
   const [crossCheckLoading, setCrossCheckLoading] = useState(false)
   const toastTimer = useRef(null)
-  const [svAvailable, setSvAvailable] = useState(new Set())
+  const [svAvailable, setSvAvailable] = useState({})
   const [svModal, setSvModal] = useState(null)
 
   useEffect(() => {
@@ -274,10 +283,18 @@ export default function ProspectFinderScreen() {
       try {
         const meta = await fetch(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${r.lat},${r.lng}&key=${KEY}`)
         const data = await meta.json()
-        return data.status === 'OK' ? r.place_id : null
+        if (data.status !== 'OK') return null
+        return {
+          place_id: r.place_id,
+          panoId: data.pano_id,
+          panoLat: data.location?.lat,
+          panoLng: data.location?.lng,
+        }
       } catch { return null }
     }))
-    setSvAvailable(prev => new Set([...prev, ...checks.filter(Boolean)]))
+    const next = {}
+    checks.filter(Boolean).forEach(c => { next[c.place_id] = c })
+    setSvAvailable(prev => ({ ...prev, ...next }))
   }
   function openHidePicker(p) {
     setHidePicker({ place: p, custom: brandGuess(p.name) })
@@ -414,10 +431,14 @@ export default function ProspectFinderScreen() {
                     className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 ${p.existing ? 'bg-white/5 text-[var(--text-muted2)] cursor-not-allowed' : 'bg-[var(--accent)]/15 text-[var(--text-accent)] border border-[var(--accent)]/30 hover:bg-[var(--accent)]/25'}`}>
                     {p.existing ? <><Check size={12} /> Added</> : adding === p.place_id ? <Loader2 size={12} className="animate-spin" /> : <><Plus size={12} /> Prospect</>}
                   </button>
-                  {((!p.existing && !chain) || (svAvailable.has(p.place_id) && p.lat && p.lng)) && (
+                  {((!p.existing && !chain) || (svAvailable[p.place_id] && p.lat && p.lng)) && (
                     <div className="flex gap-1 justify-end">
-                      {svAvailable.has(p.place_id) && p.lat && p.lng && (
-                        <button onClick={() => setSvModal({ lat: p.lat, lng: p.lng, name: p.name })}
+                      {svAvailable[p.place_id] && p.lat && p.lng && (
+                        <button onClick={() => {
+                          const info = svAvailable[p.place_id]
+                          const heading = info && info.panoLat != null ? bearingDeg(info.panoLat, info.panoLng, p.lat, p.lng) : null
+                          setSvModal({ panoId: info?.panoId, lat: p.lat, lng: p.lng, name: p.name, heading })
+                        }}
                           title="Storefront view"
                           className="px-2 py-1 rounded-lg text-[10px] font-medium flex items-center bg-white/5 text-[var(--text-muted2)] hover:bg-white/10">
                           <Camera size={11} />
@@ -629,14 +650,14 @@ export default function ProspectFinderScreen() {
           onClick={() => setSvModal(null)}>
           <div className="max-w-full max-h-full flex flex-col items-center" onClick={e => e.stopPropagation()}>
             <img
-              src={`https://maps.googleapis.com/maps/api/streetview?size=640x640&location=${svModal.lat},${svModal.lng}&fov=80&key=${KEY}`}
+              src={`https://maps.googleapis.com/maps/api/streetview?size=640x640${svModal.panoId ? `&pano=${svModal.panoId}` : `&location=${svModal.lat},${svModal.lng}`}${svModal.heading != null ? `&heading=${svModal.heading}` : ''}&fov=80&key=${KEY}`}
               alt={svModal.name}
               className="max-w-full max-h-[75vh] object-contain rounded-lg"
               style={{ touchAction: 'pinch-zoom' }}
             />
             <div className="text-center text-white text-sm font-medium mt-3">{svModal.name}</div>
             <div className="flex items-center gap-3 mt-2">
-              <a href={`https://www.google.com/maps/@${svModal.lat},${svModal.lng},3a,75y,0h,90t/data=!3m1!1e3`}
+              <a href={`https://www.google.com/maps/@${svModal.lat},${svModal.lng},3a,75y,${svModal.heading != null ? svModal.heading : 0}h,90t/data=!3m1!1e3`}
                 target="_blank" rel="noopener noreferrer"
                 onClick={e => e.stopPropagation()}
                 className="text-xs text-[var(--text-accent)] hover:underline">
