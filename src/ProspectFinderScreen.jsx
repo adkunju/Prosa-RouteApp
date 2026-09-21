@@ -77,6 +77,8 @@ export default function ProspectFinderScreen() {
   const [query, setQuery] = useState('')
   const [stores, setStores] = useState([])
   const [anchorStore, setAnchorStore] = useState('')
+  const [anchorOpen, setAnchorOpen] = useState(false)
+  const [anchorQuery, setAnchorQuery] = useState('')
   const [radiusKm, setRadiusKm] = useState(3)
   const [types, setTypes] = useState(DEFAULT_TYPES)
   const [busy, setBusy] = useState(false)
@@ -159,7 +161,7 @@ export default function ProspectFinderScreen() {
       }
       // Text Search matches semantically — catches organic/health/specialty shops that
       // Nearby Search would drop for having non-standard Google primary types
-      const typeTerms = { supermarket: 'supermarket', grocery_store: 'grocery', convenience_store: 'convenience store', bakery: 'bakery', cafe: 'cafe' }
+      const typeTerms = { supermarket: 'supermarket', grocery_store: 'grocery', convenience_store: 'convenience store', bakery: 'bakery', cafe: 'cafe', gym: 'gym fitness center' }
       const textQuery = types.map(t => typeTerms[t] || t).join(' OR ')
       const nearRes = await fetch(`${PLACES_URL}:searchText`, {
         method: 'POST',
@@ -335,14 +337,32 @@ export default function ProspectFinderScreen() {
         </div>
       ) : (
         <div className="relative">
-          <select value={anchorStore} onChange={e => setAnchorStore(e.target.value)}
-            className="w-full pl-3 pr-9 py-2.5 bg-[var(--bg-input)] rounded-xl text-sm text-[var(--text-primary)] outline-none appearance-none border border-transparent focus:border-[var(--accent)]/40">
-            <option value="">Pick an existing store…</option>
-            {stores.filter(s => s.lat && s.lng).map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
+          <input
+            value={anchorOpen ? anchorQuery : (stores.find(s => s.id === anchorStore)?.name || '')}
+            onChange={e => setAnchorQuery(e.target.value)}
+            onFocus={() => { setAnchorOpen(true); setAnchorQuery('') }}
+            onBlur={() => setTimeout(() => setAnchorOpen(false), 150)}
+            placeholder="Pick an existing store…"
+            className="w-full pl-3 pr-9 py-2.5 bg-[var(--bg-input)] rounded-xl text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted2)] outline-none border border-transparent focus:border-[var(--accent)]/40"
+          />
           <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted2)] pointer-events-none" />
+          {anchorOpen && (() => {
+            const q = anchorQuery.trim().toLowerCase()
+            const list = stores.filter(s => s.lat && s.lng).filter(s => !q || s.name.toLowerCase().includes(q))
+            return (
+              <div className="absolute top-full mt-1 left-0 right-0 max-h-64 overflow-y-auto bg-[var(--bg-card)] border border-white/10 rounded-xl z-20 shadow-lg">
+                {list.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-[var(--text-muted2)] italic">No match</div>
+                ) : list.map(s => (
+                  <button key={s.id}
+                    onMouseDown={() => { setAnchorStore(s.id); setAnchorQuery(''); setAnchorOpen(false) }}
+                    className={`w-full text-left px-3 py-2 text-sm hover:bg-white/5 ${anchorStore === s.id ? 'text-[var(--text-accent)] bg-white/5' : 'text-[var(--text-primary)]'}`}>
+                    {s.name}
+                  </button>
+                ))}
+              </div>
+            )
+          })()}
         </div>
       )}
 
@@ -357,7 +377,7 @@ export default function ProspectFinderScreen() {
       </div>
 
       <div className="flex flex-wrap gap-1.5">
-        {[['supermarket','Supermarket'],['grocery_store','Grocery'],['convenience_store','Convenience'],['bakery','Bakery'],['cafe','Cafe']].map(([t, label]) => (
+        {[['supermarket','Supermarket'],['grocery_store','Grocery'],['convenience_store','Convenience'],['bakery','Bakery'],['cafe','Cafe'],['gym','Gym']].map(([t, label]) => (
           <button key={t} onClick={() => toggleType(t)}
             className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${types.includes(t) ? 'bg-[var(--accent)]/15 text-[var(--text-accent)] border border-[var(--accent)]/30' : 'bg-[var(--bg-input)] text-[var(--text-muted2)] border border-transparent'}`}>
             {label}
