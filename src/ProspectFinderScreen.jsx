@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { Search, MapPin, Star, Plus, Check, Loader2, RefreshCw, ChevronDown, Ban, EyeOff, Eye, X, Settings } from 'lucide-react'
+import { Search, MapPin, Star, Plus, Check, Loader2, RefreshCw, ChevronDown, Ban, EyeOff, Eye, X, Settings, Camera } from 'lucide-react'
 
 const KEY = import.meta.env.VITE_GOOGLE_PLACES_KEY
 const PLACES_URL = 'https://places.googleapis.com/v1/places'
@@ -84,6 +84,8 @@ export default function ProspectFinderScreen() {
   const [crossCheck, setCrossCheck] = useState(null) // { term, count, capped, names, error }
   const [crossCheckLoading, setCrossCheckLoading] = useState(false)
   const toastTimer = useRef(null)
+  const [svAvailable, setSvAvailable] = useState(new Set())
+  const [svModal, setSvModal] = useState(null)
 
   useEffect(() => {
     supabase.from('stores')
@@ -106,7 +108,7 @@ export default function ProspectFinderScreen() {
         setMode(c.mode || 'area'); setQuery(c.query || '')
         setAnchorStore(c.anchorStore || ''); setRadiusKm(c.radiusKm || 3)
         setTypes(c.types || DEFAULT_TYPES)
-        setResults(c.results || []); setCenter(c.center || null)
+        setResults(c.results || []); checkStreetView(c.results || []); setCenter(c.center || null)
         if (c.hideChains !== undefined) setHideChains(c.hideChains)
       }
     } catch {}
@@ -186,6 +188,7 @@ export default function ProspectFinderScreen() {
         .filter(p => p.distance_km <= radiusKm)
         .sort((a, b) => b.score - a.score)
       setResults(enriched)
+      checkStreetView(enriched)
       setCenter({ lat, lng, label })
     } catch (e) {
       setError(e.message)
@@ -263,6 +266,18 @@ export default function ProspectFinderScreen() {
     } catch (e) {
       setCrossCheck({ term: t, error: e.message })
     } finally { setCrossCheckLoading(false) }
+  }
+  async function checkStreetView(items) {
+    if (!KEY || !items || items.length === 0) return
+    const checks = await Promise.all(items.map(async (r) => {
+      if (!r.lat || !r.lng) return null
+      try {
+        const meta = await fetch(`https://maps.googleapis.com/maps/api/streetview/metadata?location=${r.lat},${r.lng}&key=${KEY}`)
+        const data = await meta.json()
+        return data.status === 'OK' ? r.place_id : null
+      } catch { return null }
+    }))
+    setSvAvailable(prev => new Set([...prev, ...checks.filter(Boolean)]))
   }
   function openHidePicker(p) {
     setHidePicker({ place: p, custom: brandGuess(p.name) })
@@ -399,11 +414,22 @@ export default function ProspectFinderScreen() {
                     className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 ${p.existing ? 'bg-white/5 text-[var(--text-muted2)] cursor-not-allowed' : 'bg-[var(--accent)]/15 text-[var(--text-accent)] border border-[var(--accent)]/30 hover:bg-[var(--accent)]/25'}`}>
                     {p.existing ? <><Check size={12} /> Added</> : adding === p.place_id ? <Loader2 size={12} className="animate-spin" /> : <><Plus size={12} /> Prospect</>}
                   </button>
-                  {!p.existing && !chain && (
-                    <button onClick={() => openHidePicker(p)}
-                      className="px-2.5 py-1 rounded-lg text-[10px] font-medium flex items-center gap-1 bg-white/5 text-[var(--text-muted2)] hover:bg-white/10">
-                      <Ban size={10} /> Hide
-                    </button>
+                  {((!p.existing && !chain) || (svAvailable.has(p.place_id) && p.lat && p.lng)) && (
+                    <div className="flex gap-1 justify-end">
+                      {svAvailable.has(p.place_id) && p.lat && p.lng && (
+                        <button onClick={() => setSvModal({ lat: p.lat, lng: p.lng, name: p.name })}
+                          title="Storefront view"
+                          className="px-2 py-1 rounded-lg text-[10px] font-medium flex items-center bg-white/5 text-[var(--text-muted2)] hover:bg-white/10">
+                          <Camera size={11} />
+                        </button>
+                      )}
+                      {!p.existing && !chain && (
+                        <button onClick={() => openHidePicker(p)}
+                          className="px-2.5 py-1 rounded-lg text-[10px] font-medium flex items-center gap-1 bg-white/5 text-[var(--text-muted2)] hover:bg-white/10">
+                          <Ban size={10} /> Hide
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -597,6 +623,31 @@ export default function ProspectFinderScreen() {
           </div>
         </div>
       )}
+      {/* Street View modal */}
+      {svModal && (
+        <div className="fixed inset-0 z-[60] bg-black/90 flex flex-col items-center justify-center p-4"
+          onClick={() => setSvModal(null)}>
+          <div className="max-w-full max-h-full flex flex-col items-center" onClick={e => e.stopPropagation()}>
+            <img
+              src={`https://maps.googleapis.com/maps/api/streetview?size=640x640&location=${svModal.lat},${svModal.lng}&fov=80&key=${KEY}`}
+              alt={svModal.name}
+              className="max-w-full max-h-[75vh] object-contain rounded-lg"
+              style={{ touchAction: 'pinch-zoom' }}
+            />
+            <div className="text-center text-white text-sm font-medium mt-3">{svModal.name}</div>
+            <div className="flex items-center gap-3 mt-2">
+              <a href={`https://www.google.com/maps/@${svModal.lat},${svModal.lng},3a,75y,0h,90t/data=!3m1!1e3`}
+                target="_blank" rel="noopener noreferrer"
+                onClick={e => e.stopPropagation()}
+                className="text-xs text-[var(--text-accent)] hover:underline">
+                Open in Street View →
+              </a>
+              <span className="text-white/40 text-[10px]">tap outside to close</span>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }
