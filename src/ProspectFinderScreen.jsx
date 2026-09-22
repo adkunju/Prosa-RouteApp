@@ -159,28 +159,38 @@ export default function ProspectFinderScreen() {
         if (!s || !s.lat || !s.lng) { setError('Pick a store with a location'); setBusy(false); return }
         lat = s.lat; lng = s.lng; label = s.name
       }
-      // Text Search matches semantically — catches organic/health/specialty shops that
-      // Nearby Search would drop for having non-standard Google primary types
-      const typeTerms = { supermarket: 'supermarket', grocery_store: 'grocery', convenience_store: 'convenience store', bakery: 'bakery', cafe: 'cafe', gym: 'gym fitness center' }
-      const textQuery = types.map(t => typeTerms[t] || t).join(' OR ')
-      const nearRes = await fetch(`${PLACES_URL}:searchText`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': KEY,
-          'X-Goog-FieldMask': FIELD_MASK,
-        },
-        body: JSON.stringify({
-          textQuery,
-          locationBias: { circle: { center: { latitude: lat, longitude: lng }, radius: radiusKm * 1000 } },
-          maxResultCount: 20,
-        })
-      })
-      if (!nearRes.ok) {
-        const txt = await nearRes.text()
-        throw new Error(`Search failed: ${nearRes.status} ${txt.slice(0, 200)}`)
+      // Fire one Text Search per selected type in parallel, then merge + dedupe.
+      // (One combined "OR" query confuses Google's natural-language matcher and
+      // silently drops results.)
+      const typeTerms = { supermarket: 'supermarket', grocery_store: 'grocery store', convenience_store: 'convenience store', bakery: 'bakery', cafe: 'cafe', gym: 'gym fitness center' }
+      const bias = { circle: { center: { latitude: lat, longitude: lng }, radius: radiusKm * 1000 } }
+      const responses = await Promise.all(types.map(t =>
+        fetch(`${PLACES_URL}:searchText`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': KEY,
+            'X-Goog-FieldMask': FIELD_MASK,
+          },
+          body: JSON.stringify({
+            textQuery: typeTerms[t] || t,
+            locationBias: bias,
+            maxResultCount: 20,
+          })
+        }).then(r => r.ok ? r.json() : Promise.reject(new Error(`${t}: ${r.status}`)))
+      ))
+      // Merge + dedupe by place id
+      const seen = new Set()
+      const merged = []
+      for (const resp of responses) {
+        for (const pl of (resp.places || [])) {
+          if (seen.has(pl.id)) continue
+          seen.add(pl.id)
+          merged.push(pl)
+        }
       }
-      const data = await nearRes.json()
+      const data = { places: merged }
+      const nearRes = { ok: true }
       const enriched = (data.places || [])
         .filter(p => p.businessStatus !== 'CLOSED_PERMANENTLY')
         .map(p => ({
