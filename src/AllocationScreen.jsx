@@ -393,7 +393,6 @@ export default function AllocationScreen() {
                   const { data: { user } } = await supabase.auth.getUser()
                   const batchRows = totalsForConfirm.map(t => ({
                     produced_on: planDate,
-                    expires_on: (() => { const [y,m,day] = planDate.split('-').map(Number); const d = new Date(y, m-1, day + (t.shelf_days || 7)); return localDate(d) })(),
                     sku_id: t.sku_id,
                     qty: t.qty,
                     user_id: user.id,
@@ -403,7 +402,6 @@ export default function AllocationScreen() {
                     .filter(t => (spareQtys[t.sku_name] || 0) > 0)
                     .map(t => ({
                       produced_on: planDate,
-                      expires_on: (() => { const [y,m,d] = planDate.split('-').map(Number); const dt = new Date(y, m-1, d + (t.shelf_days || 7)); return localDate(dt) })(),
                       sku_id: t.sku_id,
                       qty: spareQtys[t.sku_name],
                       user_id: user.id,

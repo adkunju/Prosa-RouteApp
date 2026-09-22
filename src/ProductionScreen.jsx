@@ -53,15 +53,11 @@ export default function ProductionScreen() {
     for (const row of prefill.totals) {
       const sku = skus.find(s => s.name === row.sku_name)
       if (!sku) continue
-      const { data: skuData } = await supabase.from('skus').select('shelf_life_days').eq('id', sku.id).single()
-      const exp = new Date(prefill.date)
-      exp.setDate(exp.getDate() + (skuData?.shelf_life_days || 5))
       await supabase.from('production_batches').insert({
         user_id: user.id,
         sku_id: sku.id,
         qty: Number(row.qty),
         produced_on: prefill.date,
-        expires_on: localDate(exp),
       })
     }
     sessionStorage.removeItem('prosa_production_prefill')
@@ -83,19 +79,11 @@ export default function ProductionScreen() {
     if (!form.sku_id || !form.qty) return
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
-    const sku = skus.find(s => s.id === form.sku_id)
-    const shelfDays = sku ? batches.find(b => b.sku_id === form.sku_id)?.skus?.shelf_life_days : 0
-    // get shelf life from skus table
-    const { data: skuData } = await supabase.from('skus').select('shelf_life_days').eq('id', form.sku_id).single()
-    const expiresOn = new Date(form.produced_on)
-    expiresOn.setDate(expiresOn.getDate() + (skuData?.shelf_life_days || 5))
-
     const { error } = await supabase.from('production_batches').insert({
       user_id: user.id,
       sku_id: form.sku_id,
       qty: Number(form.qty),
       produced_on: form.produced_on,
-      expires_on: localDate(expiresOn),
     })
     if (!error) { await load(); resetForm() }
     setSaving(false)

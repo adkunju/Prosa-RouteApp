@@ -966,7 +966,6 @@ export default function WeekPlanScreen() {
                   const today = pendingProduction.date
                   const rows = pendingProduction.totals.map(t => ({
                     produced_on: today,
-                    expires_on: (() => { const d = new Date(today); d.setDate(d.getDate() + (t.shelf_days || 7)); return d.toISOString().slice(0,10) })(),
                     sku_id: t.sku_id,
                     qty: prodQtys[t.sku_name] ?? t.qty,
                     user_id: user.id,
