@@ -14,7 +14,7 @@ function _tokenMatch(q, name) {
   return t.split(/\s+/).filter(Boolean).every(x => n.includes(x))
 }
 
-export default function QuickDeliverModal({ onClose, onSaved }) {
+export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
   const [stores, setStores] = useState([])
   const [recentIds, setRecentIds] = useState([])
   const [skus, setSkus] = useState([])
@@ -46,6 +46,12 @@ export default function QuickDeliverModal({ onClose, onSaved }) {
     setSkus(sk || [])
     setBatches((b || []).map(x => ({ ...x, available: x.qty - (used[x.id] || 0) })))
   })() }, [])
+
+  useEffect(() => {
+    if (initialStore && !store && skus.length > 0 && batches.length > 0) {
+      pickStore(initialStore)
+    }
+  }, [initialStore, skus, batches])
 
   const recentStores = recentIds.slice(0, 8).map(id => stores.find(s => s.id === id)).filter(Boolean)
   const matches = query.trim()

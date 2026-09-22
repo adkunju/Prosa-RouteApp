@@ -6,6 +6,7 @@ import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 import ProspectVisitModal from './ProspectVisitModal'
 import { useSettings } from './useSettings'
+import { computeProposedQty } from './forecastMath'
 
 const today = () => new Date().toLocaleDateString('en-CA')
 // START_HOUR replaced by settings.route_start_time
@@ -437,6 +438,10 @@ export default function PlanViewScreen() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [completedStopIds, setCompletedStopIds] = useState(new Set())
+  const [pickupDueToday, setPickupDueToday] = useState([])
+  const [pickupModalStore, setPickupModalStore] = useState(null)
+  const [skippedPickupStoreIds, setSkippedPickupStoreIds] = useState(new Set())
+  const [pickupSectionOpen, setPickupSectionOpen] = useState(false)
   const [skippedStopIds, setSkippedStopIds] = useState(new Set())
   const [activeCompleteStop, setActiveCompleteStop] = useState(null)
   const [completeForm, setCompleteForm] = useState({})
@@ -540,6 +545,41 @@ export default function PlanViewScreen() {
     } else {
       setCompletedStopIds(new Set())
     }
+
+    // Load depot pickups due on/before this date
+    const [{ data: forecast }, { data: pickupStores }, { data: pickupDeliveredToday }] = await Promise.all([
+      supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
+      supabase.from('stores').select('id, name, is_pickup, is_active').eq('is_pickup', true).eq('is_active', true),
+      supabase.from('delivery_lines').select('store_id').eq('delivered_on', date).is('plan_stop_id', null),
+    ])
+    const pickupStoreIds = new Set((pickupStores || []).map(s => s.id))
+    const deliveredPickupToday = new Set((pickupDeliveredToday || []).filter(d => pickupStoreIds.has(d.store_id)).map(d => d.store_id))
+    const pickupRows = (forecast || []).filter(r =>
+      pickupStoreIds.has(r.store_id) && r.next_visit_due && (
+        deliveredPickupToday.has(r.store_id) ||
+        (new Date(r.next_visit_due) - new Date(date)) / 86400000 <= 3
+      )
+    )
+    const byPickupStore = {}
+    pickupRows.forEach(r => {
+      if (!byPickupStore[r.store_id]) {
+        byPickupStore[r.store_id] = { store_id: r.store_id, name: r.store_name, due_date: r.next_visit_due, skuReqs: [] }
+      }
+      const { proposed } = computeProposedQty(r)
+      byPickupStore[r.store_id].skuReqs.push({ sku_id: r.sku_id, name: r.sku_name, qty: proposed })
+      if (r.next_visit_due < byPickupStore[r.store_id].due_date) byPickupStore[r.store_id].due_date = r.next_visit_due
+    })
+    setPickupDueToday(Object.values(byPickupStore).filter(s => s.skuReqs.some(r => r.qty > 0)))
+
+    // Re-hydrate pickup completions after reload so cards remember their state
+    if (deliveredPickupToday.size > 0) {
+      setCompletedStopIds(prev => {
+        const next = new Set(prev)
+        deliveredPickupToday.forEach(sid => next.add(`pickup-${sid}`))
+        return next
+      })
+    }
+
     setLoading(false)
   }
 
@@ -707,7 +747,12 @@ export default function PlanViewScreen() {
   }
 
   function batchesForSku(skuId) {
-    return batches.filter(b => b.sku_id === skuId)
+    return batches.filter(b => {
+      if (b.sku_id !== skuId) return false
+      if (b.expires_on < today()) return false
+      const delivered = (b.delivery_lines || []).reduce((n, l) => n + (l.qty_delivered || 0), 0)
+      return (b.qty - delivered) > 0
+    })
   }
 
   async function openCompleteForm(stop) {
@@ -836,16 +881,19 @@ export default function PlanViewScreen() {
     setCompleting(true)
     const dateStr = selectedDate
     // Impulse-added SKUs need a requirements row first, marked manual so it is
-    // distinguishable from forecast-generated rows.
-    for (const extra of extraReqs) {
-      const line = completeForm[extra.sku_id]
-      await supabase.from('requirements').insert({
-        plan_stop_id: activeCompleteStop.id,
-        sku_id: extra.sku_id,
-        proposed_qty: 0,
-        approved_qty: Number(line?.qty_delivered) || 0,
-        source: 'manual',
-      })
+    // distinguishable from forecast-generated rows. Pickups have no plan_stop,
+    // so extras there just insert straight into delivery_lines below.
+    if (!activeCompleteStop.is_pickup) {
+      for (const extra of extraReqs) {
+        const line = completeForm[extra.sku_id]
+        await supabase.from('requirements').insert({
+          plan_stop_id: activeCompleteStop.id,
+          sku_id: extra.sku_id,
+          proposed_qty: 0,
+          approved_qty: Number(line?.qty_delivered) || 0,
+          source: 'manual',
+        })
+      }
     }
 
     const rows = [
@@ -857,7 +905,7 @@ export default function PlanViewScreen() {
       const line = completeForm[req.sku_id]
       if (!line) continue
       await supabase.from('delivery_lines').insert({
-        plan_stop_id: activeCompleteStop.id,
+        plan_stop_id: activeCompleteStop.is_pickup ? null : activeCompleteStop.id,
         sku_id: req.sku_id,
         batch_id: line.batch_id || null,
         qty_delivered: Number(line.qty_delivered) || 0,
@@ -1044,6 +1092,67 @@ export default function PlanViewScreen() {
             <p>No plan for this date</p>
           </div>
         )}
+        {!loading && pickupDueToday.length > 0 && (() => {
+          const activePickups = pickupDueToday.filter(s => !skippedPickupStoreIds.has(s.store_id) && !completedStopIds.has(`pickup-${s.store_id}`))
+          const donePickups = pickupDueToday.filter(s => completedStopIds.has(`pickup-${s.store_id}`))
+          return (
+            <div className={`bg-[var(--bg-card)]/40 border border-[var(--text-gold)]/25 rounded-2xl p-3 mb-1 transition-opacity ${activePickups.length === 0 ? 'opacity-50' : ''}`}>
+              <button onClick={() => setPickupSectionOpen(o => !o)}
+                className="w-full flex items-center gap-1.5 text-left">
+                <Package size={12} className="text-[var(--text-gold)]" />
+                <span className="text-[var(--text-primary)] text-xs font-semibold">Depot pickups today</span>
+                {activePickups.length > 0 && (
+                  <span className="bg-[var(--text-gold)]/20 text-[var(--text-gold)] text-[10px] font-medium rounded-full px-1.5 py-0.5">{activePickups.length} pending</span>
+                )}
+                <span className="text-[var(--text-muted2)] text-[10px] ml-auto">{donePickups.length}/{pickupDueToday.length}</span>
+                <ChevronDown size={12} className={`text-[var(--text-muted2)] transition-transform ${pickupSectionOpen ? 'rotate-180' : ''}`} />
+              </button>
+              <div className={`flex flex-col gap-1.5 overflow-hidden transition-all ${pickupSectionOpen ? 'mt-2 max-h-[1000px]' : 'max-h-0'}`}>
+                {activePickups.map(s => (
+                  <div key={s.store_id} className="bg-[var(--bg-input)]/40 rounded-lg px-2.5 py-2 flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[var(--text-secondary)] text-xs font-medium truncate">{s.name}</div>
+                      <div className="text-[var(--text-muted2)] text-[10px] truncate">
+                        {s.skuReqs.map(r => `${r.name.split('/')[0].trim()}: ${r.qty}`).join(' · ')}
+                      </div>
+                    </div>
+                    <button onClick={() => {
+                        const syntheticStop = {
+                          id: `pickup-${s.store_id}`,
+                          store_id: s.store_id,
+                          stores: { name: s.name },
+                          is_pickup: true,
+                          requirements: s.skuReqs.map((r, i) => ({
+                            id: `pickup-req-${s.store_id}-${r.sku_id}`,
+                            sku_id: r.sku_id,
+                            skus: { name: r.name },
+                            approved_qty: r.qty,
+                            proposed_qty: r.qty,
+                          })),
+                        }
+                        openCompleteForm(syntheticStop)
+                      }}
+                      className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-[10px] font-medium rounded-md px-2 py-1 flex items-center gap-1 shrink-0">
+                      <ClipboardCheck size={11} /> Mark delivery
+                    </button>
+                    <button onClick={() => setSkippedPickupStoreIds(new Set([...skippedPickupStoreIds, s.store_id]))}
+                      className="text-[var(--text-muted2)] hover:text-red-400 text-[10px] shrink-0">
+                      Skip
+                    </button>
+                  </div>
+                ))}
+                {donePickups.map(s => (
+                  <div key={s.store_id} className="bg-[var(--bg-input)]/20 rounded-lg px-2.5 py-1.5 flex items-center gap-2 opacity-60">
+                    <CheckCircle size={12} className="text-[var(--accent)] shrink-0" />
+                    <span className="text-[var(--text-muted)] text-xs truncate flex-1">{s.name}</span>
+                    <span className="text-[var(--text-muted2)] text-[10px]">Collected</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })()}
+
         {orderedStops.length > 0 && (
           <button onClick={toggleLiveOrigin}
             className="w-full bg-[var(--bg-card)]/60 rounded-xl p-3 text-xs flex items-center gap-2 hover:bg-[var(--bg-input)]/60 transition-colors">
