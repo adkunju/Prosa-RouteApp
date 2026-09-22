@@ -777,8 +777,8 @@ export default function PlanViewScreen() {
     const [{ data: skus }, { data: prior }, { data: storePrices }, { data: lastPrices }] = await Promise.all([
       supabase.from('skus').select('id, name, unit_price').order('name'),
       supabase.from('delivery_lines')
-        .select('id, sku_id, qty_delivered, delivered_on, unit_price, is_offer, production_batches(produced_on), returns(qty_returned), plan_stops!inner(store_id)')
-        .eq('plan_stops.store_id', stop.store_id)
+        .select('id, sku_id, qty_delivered, delivered_on, unit_price, is_offer, production_batches(produced_on), returns(qty_returned)')
+        .eq('store_id', stop.store_id)
         .order('delivered_on', { ascending: false })
         .limit(80),
       supabase.from('store_sku_price_latest').select('sku_id, price').eq('store_id', stop.store_id),
