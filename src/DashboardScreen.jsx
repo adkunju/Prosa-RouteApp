@@ -171,6 +171,34 @@ export default function DashboardScreen() {
     setStock(allBatches)
   })() }, [])
 
+  const [selectedDate, setSelectedDate] = useState(new Date().toLocaleDateString('en-CA'))
+  const [deliveriesToday, setDeliveriesToday] = useState([])
+  useEffect(() => { (async () => {
+    const [{ data: dl }, { data: rt }] = await Promise.all([
+      supabase.from('delivery_lines')
+        .select('qty_delivered, stores(name)')
+        .eq('delivered_on', selectedDate)
+        .gt('qty_delivered', 0),
+      supabase.from('returns')
+        .select('qty_returned, stores(name)')
+        .eq('returned_on', selectedDate)
+        .gt('qty_returned', 0),
+    ])
+    const byStore = {}
+    ;(dl || []).forEach(d => {
+      const name = d.stores?.name || 'Unknown'
+      if (!byStore[name]) byStore[name] = { qty: 0, ret: 0 }
+      byStore[name].qty += Number(d.qty_delivered) || 0
+    })
+    ;(rt || []).forEach(r => {
+      if (!r.stores?.name) return
+      const name = r.stores.name
+      if (!byStore[name]) byStore[name] = { qty: 0, ret: 0 }
+      byStore[name].ret += Number(r.qty_returned) || 0
+    })
+    setDeliveriesToday(Object.entries(byStore).map(([name, v]) => ({ name, qty: v.qty, ret: v.ret })).sort((a, b) => b.qty - a.qty))
+  })() }, [selectedDate])
+
   if (loading || !stats) {
     return <div className="flex-1 flex items-center justify-center text-[var(--text-muted2)]">Loading dashboard...</div>
   }
@@ -236,6 +264,55 @@ export default function DashboardScreen() {
           </>
         )}
       </div>
+
+      {(
+        <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <button onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate() - 1); setSelectedDate(d.toLocaleDateString('en-CA')) }}
+                className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] w-5 h-5 flex items-center justify-center">‹</button>
+              <span className="text-[var(--text-primary)] text-sm font-semibold min-w-[7rem] text-center">
+                {new Date(selectedDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}
+                
+              </span>
+              <button onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate() + 1); const next = d.toLocaleDateString('en-CA'); if (next <= new Date().toLocaleDateString('en-CA')) setSelectedDate(next) }}
+                disabled={selectedDate >= new Date().toLocaleDateString('en-CA')}
+                className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed w-5 h-5 flex items-center justify-center">›</button>
+              {selectedDate !== new Date().toLocaleDateString('en-CA') && (
+                <button onClick={() => setSelectedDate(new Date().toLocaleDateString('en-CA'))}
+                  className="ml-1 px-1.5 py-0.5 rounded-md bg-[var(--accent)]/15 text-[var(--accent)] text-[10px] font-semibold tracking-wide hover:bg-[var(--accent)]/25 transition-colors">GO TO TODAY</button>
+              )}
+            </div>
+            {deliveriesToday.length > 0 && (
+            <span className="text-[var(--text-muted2)] text-[10px]">{deliveriesToday.length} store{deliveriesToday.length !== 1 ? 's' : ''}</span>
+          )}
+          </div>
+          {deliveriesToday.length === 0 ? (
+            <p className="text-[var(--text-muted2)] text-sm py-1">{selectedDate === new Date().toLocaleDateString('en-CA') ? 'No deliveries or returns yet today' : 'No deliveries or returns this day'}</p>
+          ) : (<>
+          <div className="flex justify-between text-[10px] text-[var(--text-muted2)] uppercase tracking-wide pb-1">
+            <span>Store</span>
+            <span className="flex gap-6"><span className="w-12 text-right">Delivered</span><span className="w-12 text-right">Returned</span></span>
+          </div>
+          {deliveriesToday.map(d => (
+            <div key={d.name} className="flex justify-between text-xs py-1 items-center">
+              <span className="text-[var(--text-muted)] truncate pr-2">{d.name}</span>
+              <span className="flex gap-6 shrink-0">
+                <span className="w-12 text-right text-[var(--text-secondary)]">{d.qty || ''}</span>
+                <span className={`w-12 text-right ${d.ret > 0 ? 'text-red-400' : 'text-[var(--text-muted2)]'}`}>{d.ret || ''}</span>
+              </span>
+            </div>
+          ))}
+          <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40 flex justify-between text-xs items-center">
+            <span className="text-[var(--text-muted)]">Total</span>
+            <span className="flex gap-6 shrink-0">
+              <span className="w-12 text-right text-[var(--text-primary)] font-semibold">{deliveriesToday.reduce((n, d) => n + (Number(d.qty) || 0), 0) || ''}</span>
+              <span className={`w-12 text-right font-semibold ${deliveriesToday.reduce((n, d) => n + (Number(d.ret) || 0), 0) > 0 ? 'text-red-400' : 'text-[var(--text-muted2)]'}`}>{deliveriesToday.reduce((n, d) => n + (Number(d.ret) || 0), 0) || ''}</span>
+            </span>
+          </div>
+          </>)}
+        </div>
+      )}
 
       <div className="flex gap-2">
         <button onClick={() => setQuickOpen(true)}

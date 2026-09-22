@@ -84,10 +84,18 @@ export default function LogScreen() {
     setLines([emptyLine(1)]); setNextId(2)
   }
 
-  async function deleteVisit(deliveryLineId, returnIds) {
+  async function deleteVisit(deliveryLineId, returnIds, storeId, deliveredOn) {
     setDeleting(deliveryLineId)
     for (const rid of returnIds) {
       await supabase.from('returns').delete().eq('id', rid)
+    }
+    // Also sweep any returns entered during THIS visit — the return may point
+    // to an older delivery_line (returns follow the batch that actually expired),
+    // so linking by delivery_line_id misses them. Match by store + return date.
+    if (storeId && deliveredOn) {
+      await supabase.from('returns').delete()
+        .eq('store_id', storeId)
+        .eq('returned_on', deliveredOn)
     }
     await supabase.from('delivery_lines').delete().eq('id', deliveryLineId)
     await load()
@@ -207,7 +215,7 @@ export default function LogScreen() {
                         className="text-[var(--text-muted2)] hover:text-[var(--accent)] text-xs transition-colors">
                         Edit
                       </button>
-                      <button onClick={() => deleteVisit(line.id, line.returns?.map(r => r.id) || [])}
+                      <button onClick={() => deleteVisit(line.id, line.returns?.map(r => r.id) || [], line.store_id || line.plan_stops?.store_id, line.delivered_on)}
                         disabled={deleting === line.id}
                         className="text-[var(--text-faint)] hover:text-red-400 transition-colors">
                         {deleting === line.id ? '...' : <Trash2 size={15} />}
