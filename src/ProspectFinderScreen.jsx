@@ -97,6 +97,24 @@ export default function ProspectFinderScreen() {
   const toastTimer = useRef(null)
   const [svAvailable, setSvAvailable] = useState({})
   const [svModal, setSvModal] = useState(null)
+  const [svPhotoIdx, setSvPhotoIdx] = useState(0)
+  const [svPhotoUrl, setSvPhotoUrl] = useState(null)
+
+  useEffect(() => {
+    if (!svModal || !svModal.placeId || svModal.placeId.startsWith('local-')) { setSvPhotoUrl(null); return }
+    let cancelled = false
+    fetch(`${PLACES_URL}/${svModal.placeId}`, {
+      headers: { 'X-Goog-Api-Key': KEY, 'X-Goog-FieldMask': 'photos' }
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (cancelled || !data) return
+        const photoName = data.photos?.[0]?.name
+        if (photoName) setSvPhotoUrl(`https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=800&key=${KEY}`)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [svModal])
 
   useEffect(() => {
     supabase.from('stores')
@@ -472,7 +490,7 @@ export default function ProspectFinderScreen() {
                         <button onClick={() => {
                           const info = svAvailable[p.place_id]
                           const heading = info && info.panoLat != null ? bearingDeg(info.panoLat, info.panoLng, p.lat, p.lng) : null
-                          setSvModal({ panoId: info?.panoId, lat: p.lat, lng: p.lng, name: p.name, heading })
+                          setSvPhotoIdx(0); setSvPhotoUrl(null); setSvModal({ panoId: info?.panoId, placeId: p.place_id, lat: p.lat, lng: p.lng, name: p.name, heading })
                         }}
                           title="Storefront view"
                           className="px-2 py-1 rounded-lg text-[10px] font-medium flex items-center bg-white/5 text-[var(--text-muted2)] hover:bg-white/10">
@@ -684,12 +702,33 @@ export default function ProspectFinderScreen() {
         <div className="fixed inset-0 z-[60] bg-black/90 flex flex-col items-center justify-center p-4"
           onClick={() => setSvModal(null)}>
           <div className="max-w-full max-h-full flex flex-col items-center" onClick={e => e.stopPropagation()}>
-            <img
-              src={`https://maps.googleapis.com/maps/api/streetview?size=640x640${svModal.panoId ? `&pano=${svModal.panoId}` : `&location=${svModal.lat},${svModal.lng}`}${svModal.heading != null ? `&heading=${svModal.heading}` : ''}&fov=80&key=${KEY}`}
-              alt={svModal.name}
-              className="max-w-full max-h-[75vh] object-contain rounded-lg"
-              style={{ touchAction: 'pinch-zoom' }}
-            />
+            <div className="w-full max-w-[640px]">
+              <div
+                className="flex overflow-x-auto snap-x snap-mandatory rounded-lg"
+                style={{ scrollbarWidth: 'none', touchAction: 'pan-x pinch-zoom' }}
+                onScroll={e => {
+                  const idx = Math.round(e.currentTarget.scrollLeft / e.currentTarget.clientWidth)
+                  if (idx !== svPhotoIdx) setSvPhotoIdx(idx)
+                }}>
+                <img
+                  src={`https://maps.googleapis.com/maps/api/streetview?size=640x640${svModal.panoId ? `&pano=${svModal.panoId}` : `&location=${svModal.lat},${svModal.lng}`}${svModal.heading != null ? `&heading=${svModal.heading}` : ''}&fov=80&key=${KEY}`}
+                  alt={svModal.name + ' — street view'}
+                  className="snap-center shrink-0 w-full max-h-[70vh] object-contain rounded-lg"
+                />
+                {svPhotoUrl && (
+                  <img
+                    src={svPhotoUrl}
+                    alt={svModal.name + ' — storefront photo'}
+                    className="snap-center shrink-0 w-full max-h-[70vh] object-contain rounded-lg"
+                  />
+                )}
+              </div>
+              <div className="flex gap-1.5 justify-center mt-2">
+                {(svPhotoUrl ? [0, 1] : [0]).map(i => (
+                  <span key={i} className={`w-1.5 h-1.5 rounded-full transition-colors ${i === svPhotoIdx ? 'bg-white' : 'bg-white/30'}`} />
+                ))}
+              </div>
+            </div>
             <div className="text-center text-white text-sm font-medium mt-3">{svModal.name}</div>
             <div className="flex items-center gap-3 mt-2">
               <a href={`https://www.google.com/maps/@${svModal.lat},${svModal.lng},3a,75y,${svModal.heading != null ? svModal.heading : 0}h,90t/data=!3m1!1e3`}
