@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import StoreMap from './StoreMap'
@@ -172,6 +173,7 @@ export default function DashboardScreen() {
   })() }, [])
 
   const [selectedDate, setSelectedDate] = useState(new Date().toLocaleDateString('en-CA'))
+  const [showAllDeliveries, setShowAllDeliveries] = useState(false)
   const [deliveriesToday, setDeliveriesToday] = useState([])
   useEffect(() => { (async () => {
     const [{ data: dl }, { data: rt }] = await Promise.all([
@@ -294,7 +296,7 @@ export default function DashboardScreen() {
             <span>Store</span>
             <span className="flex gap-6"><span className="w-12 text-right">Delivered</span><span className="w-12 text-right">Returned</span></span>
           </div>
-          {deliveriesToday.map(d => (
+          {deliveriesToday.slice(0, 6).map(d => (
             <div key={d.name} className="flex justify-between text-xs py-1 items-center">
               <span className="text-[var(--text-muted)] truncate pr-2">{d.name}</span>
               <span className="flex gap-6 shrink-0">
@@ -303,6 +305,12 @@ export default function DashboardScreen() {
               </span>
             </div>
           ))}
+          {deliveriesToday.length > 6 && (
+            <button onClick={() => setShowAllDeliveries(true)}
+              className="w-full text-[var(--accent)] text-xs py-1.5 hover:underline text-left">
+              View all {deliveriesToday.length} stores ›
+            </button>
+          )}
           <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40 flex justify-between text-xs items-center">
             <span className="text-[var(--text-muted)]">Total</span>
             <span className="flex gap-6 shrink-0">
@@ -312,6 +320,42 @@ export default function DashboardScreen() {
           </div>
           </>)}
         </div>
+      )}
+
+      {showAllDeliveries && createPortal(
+        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col p-4"
+          onClick={() => setShowAllDeliveries(false)}>
+          <div onClick={e => e.stopPropagation()}
+            className="m-2 mt-10 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[80vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[var(--text-primary)] text-sm font-semibold">
+                {new Date(selectedDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })} · all deliveries
+              </span>
+              <button onClick={() => setShowAllDeliveries(false)} className="text-[var(--text-muted)]"><X size={18} /></button>
+            </div>
+            <div className="flex justify-between text-[10px] text-[var(--text-muted2)] uppercase tracking-wide pb-1">
+              <span>Store</span>
+              <span className="flex gap-6"><span className="w-12 text-right">Delivered</span><span className="w-12 text-right">Returned</span></span>
+            </div>
+            {deliveriesToday.map(d => (
+              <div key={d.name} className="flex justify-between text-xs py-1 items-center">
+                <span className="text-[var(--text-muted)] truncate pr-2">{d.name}</span>
+                <span className="flex gap-6 shrink-0">
+                  <span className="w-12 text-right text-[var(--text-secondary)]">{d.qty || ''}</span>
+                  <span className={`w-12 text-right ${d.ret > 0 ? 'text-red-400' : 'text-[var(--text-muted2)]'}`}>{d.ret || ''}</span>
+                </span>
+              </div>
+            ))}
+            <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40 flex justify-between text-xs items-center">
+              <span className="text-[var(--text-muted)] font-semibold">Total ({deliveriesToday.length} stores)</span>
+              <span className="flex gap-6 shrink-0">
+                <span className="w-12 text-right text-[var(--text-primary)] font-semibold">{deliveriesToday.reduce((n, d) => n + (Number(d.qty) || 0), 0) || ''}</span>
+                <span className={`w-12 text-right font-semibold ${deliveriesToday.reduce((n, d) => n + (Number(d.ret) || 0), 0) > 0 ? 'text-red-400' : 'text-[var(--text-muted2)]'}`}>{deliveriesToday.reduce((n, d) => n + (Number(d.ret) || 0), 0) || ''}</span>
+              </span>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
 
       <div className="flex gap-2">
@@ -329,7 +373,7 @@ export default function DashboardScreen() {
       {addStoreOpen && <AddStoreModal onClose={() => setAddStoreOpen(false)} onSaved={() => window.location.reload()} />}
 
       <button onClick={() => setShowFullMap(true)}
-        className="relative h-40 rounded-2xl overflow-hidden bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50">
+        className="relative h-40 shrink-0 rounded-2xl overflow-hidden bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50">
         <div className="w-full h-full pointer-events-none">{depot && <StoreMap depot={depot} stores={stores} interactive={false} zoom={10} />}</div>
         <span className="absolute bottom-2 right-2 bg-[var(--bg-root)]/70 backdrop-blur-md text-[var(--text-secondary)] text-xs px-2 py-1 rounded-full">Tap to view map</span>
         <span className="absolute top-2 left-2 bg-[var(--bg-root)]/70 backdrop-blur-md text-[var(--text-secondary)] text-xs px-2 py-1 rounded-full">{stores.length} stores</span>
