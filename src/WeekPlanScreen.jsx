@@ -771,7 +771,11 @@ export default function WeekPlanScreen() {
             </div>
             <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40">
               {Object.entries(pickupDue.reduce((acc, s) => {
-                s.skuReqs.forEach(r => { acc[r.name] = (acc[r.name] || 0) + r.qty })
+                s.skuReqs.forEach(r => {
+                  const key = `${s.store_id}-${r.sku_id}`
+                  const qty = qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : r.qty
+                  acc[r.name] = (acc[r.name] || 0) + qty
+                })
                 return acc
               }, {})).map(([name, qty]) => (
                 <div key={name} className="flex justify-between text-xs py-0.5">
@@ -799,24 +803,40 @@ export default function WeekPlanScreen() {
                     const key = `${s.store_id}-${skuId}`
                     return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0))
                   }, 0)
-                  + pickupDue.reduce((n, s) => n + (s.skuReqs.find(r => r.sku_id === skuId)?.qty || 0), 0)
+                  + pickupDue.reduce((n, s) => {
+                    const key = `${s.store_id}-${skuId}`
+                    const req = s.skuReqs.find(r => r.sku_id === skuId)
+                    if (!req) return n
+                    return n + (qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : req.qty)
+                  }, 0)
                 const regularUsed = Math.min(totalAllocated, total)
                 const spareUsed = Math.max(0, totalAllocated - total)
                 const regularLeft = total - regularUsed
                 const spareLeft = spare - spareUsed
+                const shortfall = Math.max(0, totalAllocated - total - spare)
                 return (
-                  <div key={skuId} className="flex justify-between text-sm py-1 border-t border-[var(--bg-input)]/30 first:border-0">
-                    <span className="text-[var(--text-secondary)]">{skuNames[skuId] || 'Unknown'}</span>
-                    <div className="text-[var(--text-muted2)] text-xs text-right">
-                      <div>
-                        {regularUsed}/{total} allocated · <span className={regularLeft === 0 ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}>{regularLeft} left</span>
-                      </div>
-                      {spare > 0 && (
-                        <div className={spareUsed > spare ? 'text-red-400' : spareUsed > 0 ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted2)]'}>
-                          {spareUsed}/{spare} spare · {spareLeft} left
+                  <div key={skuId} className="py-1 border-t border-[var(--bg-input)]/30 first:border-0">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-[var(--text-secondary)]">{skuNames[skuId] || 'Unknown'}</span>
+                      <div className="text-[var(--text-muted2)] text-xs text-right">
+                        <div>
+                          {regularUsed}/{total} allocated · <span className={regularLeft === 0 ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}>{regularLeft} left</span>
                         </div>
-                      )}
+                        {spare > 0 && (
+                          <div className={spareUsed > spare ? 'text-red-400' : spareUsed > 0 ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted2)]'}>
+                            {spareUsed}/{spare} spare · {spareLeft} left
+                          </div>
+                        )}
+                      </div>
                     </div>
+                    {shortfall > 0 && (
+                      <div className="mt-1.5 flex items-center gap-1.5 bg-red-500/15 border border-red-400/40 rounded-lg px-2 py-1.5">
+                        <AlertTriangle size={12} className="text-red-400 shrink-0" />
+                        <span className="text-red-300 text-xs font-medium">
+                          Overallocated by {shortfall} pcs — reduce qty or produce more stock
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -1242,9 +1262,26 @@ export default function WeekPlanScreen() {
             {pickupDue.map(s => (
               <div key={s.store_id} className="py-2 border-t border-[var(--bg-input)]/40">
                 <div className="text-[var(--text-secondary)] text-sm">{s.name}</div>
-                <div className="text-[var(--text-muted2)] text-xs mt-0.5">
-                  {s.skuReqs.map(r => `${r.name}: ${r.qty} pcs`).join(' · ')}
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {s.skuReqs.map(r => {
+                    const key = `${s.store_id}-${r.sku_id}`
+                    const qty = qtyOverrides[key] !== undefined ? qtyOverrides[key] : r.qty
+                    return (
+                      <div key={r.sku_id} className="flex items-center gap-1 bg-[var(--bg-input)]/40 rounded-lg px-1.5 py-0.5">
+                        <span className="text-[var(--text-muted2)] text-[10px]">{r.name.split('/')[0].trim()}</span>
+                        <button onClick={() => { setQtyOverrides(o => ({ ...o, [key]: Math.max(0, qty - 1) })); setHasUnsavedChanges(true); setSaved(false) }}
+                          className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] w-5 h-5 flex items-center justify-center">−</button>
+                        <span className={`text-xs font-medium w-6 text-center ${qty === 0 ? 'text-[var(--text-muted2)]' : 'text-[var(--text-primary)]'}`}>{qty}</span>
+                        <button onClick={() => { setQtyOverrides(o => ({ ...o, [key]: qty + 1 })); setHasUnsavedChanges(true); setSaved(false) }}
+                          className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] w-5 h-5 flex items-center justify-center">+</button>
+                      </div>
+                    )
+                  })}
                 </div>
+                <button onClick={() => { skipStore(s); setShowPickupDetail(false) }}
+                  className="text-[var(--text-muted2)] hover:text-red-400 text-xs mt-1.5 transition-colors">
+                  Skip this store
+                </button>
               </div>
             ))}
           </div>
