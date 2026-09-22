@@ -547,11 +547,14 @@ export default function PlanViewScreen() {
     }
 
     // Load depot pickups due on/before this date
-    const [{ data: forecast }, { data: pickupStores }, { data: pickupDeliveredToday }] = await Promise.all([
+    const [{ data: forecast }, { data: pickupStores }, { data: pickupDeliveredToday }, { data: pickupOverrides }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
       supabase.from('stores').select('id, name, is_pickup, is_active').eq('is_pickup', true).eq('is_active', true),
       supabase.from('delivery_lines').select('store_id').eq('delivered_on', date).is('plan_stop_id', null),
+      supabase.from('pickup_allocations').select('store_id, sku_id, qty'),
     ])
+    const pickupOverrideMap = {}
+    ;(pickupOverrides || []).forEach(o => { pickupOverrideMap[`${o.store_id}_${o.sku_id}`] = o.qty })
     const pickupStoreIds = new Set((pickupStores || []).map(s => s.id))
     const deliveredPickupToday = new Set((pickupDeliveredToday || []).filter(d => pickupStoreIds.has(d.store_id)).map(d => d.store_id))
     const pickupRows = (forecast || []).filter(r =>
@@ -565,8 +568,11 @@ export default function PlanViewScreen() {
       if (!byPickupStore[r.store_id]) {
         byPickupStore[r.store_id] = { store_id: r.store_id, name: r.store_name, due_date: r.next_visit_due, skuReqs: [] }
       }
-      const { proposed } = computeProposedQty(r)
-      byPickupStore[r.store_id].skuReqs.push({ sku_id: r.sku_id, name: r.sku_name, qty: proposed })
+      const overrideKey = `${r.store_id}_${r.sku_id}`
+      const qty = pickupOverrideMap[overrideKey] !== undefined
+        ? pickupOverrideMap[overrideKey]
+        : computeProposedQty(r).proposed
+      byPickupStore[r.store_id].skuReqs.push({ sku_id: r.sku_id, name: r.sku_name, qty })
       if (r.next_visit_due < byPickupStore[r.store_id].due_date) byPickupStore[r.store_id].due_date = r.next_visit_due
     })
     setPickupDueToday(Object.values(byPickupStore).filter(s => s.skuReqs.some(r => r.qty > 0)))
@@ -1253,13 +1259,23 @@ export default function PlanViewScreen() {
                         <CheckCircle size={14} /> Delivered
                       </span>
                       <button onClick={async () => {
-                        const { data: dls } = await supabase.from('delivery_lines').select('id').eq('plan_stop_id', stop.id)
+                        // Deletions must catch BOTH plan-linked and quick-delivery rows
+                        // for this store today, AND any returns entered during this visit
+                        // (which may point to an older delivery_line if the pack expired
+                        // stock came from an earlier drop).
+                        const dateStr = selectedDate
+                        const { data: dls } = await supabase.from('delivery_lines').select('id')
+                          .or(`plan_stop_id.eq.${stop.id},and(store_id.eq.${stop.store_id},delivered_on.eq.${dateStr})`)
                         if (dls?.length) {
                           for (const dl of dls) {
                             await supabase.from('returns').delete().eq('delivery_line_id', dl.id)
                           }
-                          await supabase.from('delivery_lines').delete().eq('plan_stop_id', stop.id)
+                          await supabase.from('delivery_lines').delete().in('id', dls.map(d => d.id))
                         }
+                        // Sweep returns entered during this visit even if linked to older deliveries
+                        await supabase.from('returns').delete()
+                          .eq('store_id', stop.store_id)
+                          .eq('returned_on', dateStr)
                         setCompletedStopIds(s => { const n = new Set(s); n.delete(stop.id); return n })
                       }} className="text-[var(--text-muted2)] hover:text-red-400 text-xs transition-colors">
                         Undo

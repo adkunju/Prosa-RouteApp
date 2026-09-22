@@ -607,6 +607,19 @@ export default function WeekPlanScreen() {
       await supabase.from('requirements').upsert(reqRows, { onConflict: 'plan_stop_id,sku_id' })
     }
 
+    // Persist pickup allocations so the Delivery tab shows the qty the user
+    // actually decided here, instead of recomputing from the raw forecast.
+    // Full replace: delete all then insert whatever pickupDue currently has.
+    await supabase.from('pickup_allocations').delete().eq('user_id', user.id)
+    const pickupAllocRows = pickupDue.flatMap(s => s.skuReqs.map(r => {
+      const key = `${s.store_id}-${r.sku_id}`
+      const qty = qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : r.qty
+      return { user_id: user.id, store_id: s.store_id, sku_id: r.sku_id, qty }
+    })).filter(r => r.qty > 0)
+    if (pickupAllocRows.length) {
+      await supabase.from('pickup_allocations').insert(pickupAllocRows)
+    }
+
     setSaving(false)
     setSaved(true)
     setHasUnsavedChanges(false)
