@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { Plus, X, FlaskConical, AlertTriangle, Pencil, Trash2 } from 'lucide-react'
+import { Plus, X, FlaskConical, AlertTriangle, Pencil, Trash2, PackageMinus } from 'lucide-react'
+import { fetchBatchUsage, notifyStockChanged, reasonLabel } from './stockUtils'
+import StockAdjustModal from './StockAdjustModal'
 
 function daysLeft(expiresOn) {
   const diff = Math.ceil((new Date(expiresOn) - new Date()) / (1000 * 60 * 60 * 24))
@@ -25,20 +27,32 @@ export default function ProductionScreen() {
   const [deletingId, setDeletingId] = useState(null)
   const [prefill, setPrefill] = useState(null)
   const [creating, setCreating] = useState(false)
+  const [adjustBatch, setAdjustBatch] = useState(null)
+  const [adjustments, setAdjustments] = useState([])
+  const [undoingId, setUndoingId] = useState(null)
 
   async function load() {
-    const [{ data: b }, { data: s }, { data: dl }] = await Promise.all([
+    const [{ data: b }, { data: s }, { used, delivered, adjusted }, { data: adj }] = await Promise.all([
       supabase.from('production_batches').select('*, skus(name, shelf_life_days)').order('produced_on', { ascending: false }).limit(40),
       supabase.from('skus').select('id, name').eq('is_active', true).order('name'),
-      supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
+      fetchBatchUsage(),
+      supabase.from('stock_adjustments').select('id, qty, reason, notes, adjusted_on, skus(name), production_batches(produced_on)')
+        .order('adjusted_on', { ascending: false }).order('created_at', { ascending: false }).limit(20),
     ])
-    const consumedByBatch = {}
-    ;(dl || []).forEach(d => { consumedByBatch[d.batch_id] = (consumedByBatch[d.batch_id] || 0) + d.qty_delivered })
-    if (b) setBatches(b.map(batch => ({ ...batch, consumed: consumedByBatch[batch.id] || 0, available: batch.qty - (consumedByBatch[batch.id] || 0) })))
+    if (b) setBatches(b.map(batch => ({ ...batch, consumed: delivered[batch.id] || 0, adjusted: adjusted[batch.id] || 0, available: batch.qty - (used[batch.id] || 0) })))
     if (s) setSkus(s)
+    setAdjustments(adj || [])
   }
 
   useEffect(() => { load() }, [])
+
+  async function undoAdjustment(id) {
+    setUndoingId(id)
+    await supabase.from('stock_adjustments').delete().eq('id', id)
+    notifyStockChanged()
+    await load()
+    setUndoingId(null)
+  }
 
   useEffect(() => {
     const raw = sessionStorage.getItem('prosa_production_prefill')
@@ -167,10 +181,21 @@ export default function ProductionScreen() {
                 <div className="text-[var(--text-muted)] text-sm mt-0.5">
                   {b.available} available <span className="text-[var(--text-faint)]">/ {b.qty} produced</span> · {b.produced_on}
                 </div>
-                {b.consumed > 0 && <div className="text-[var(--text-muted2)] text-xs mt-0.5">{b.consumed} delivered so far</div>}
+                {(b.consumed > 0 || b.adjusted > 0) && (
+                  <div className="text-[var(--text-muted2)] text-xs mt-0.5">
+                    {b.consumed > 0 && `${b.consumed} delivered`}
+                    {b.consumed > 0 && b.adjusted > 0 && ' · '}
+                    {b.adjusted > 0 && <span className="text-[var(--text-amber)]">{b.adjusted} adjusted out</span>}
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <ExpiryBadge days={daysLeft(b.expires_on)} />
+                {b.available > 0 && (
+                  <button onClick={() => setAdjustBatch({ id: b.id, sku_id: b.sku_id })} title="Adjust stock" className="text-[var(--text-muted2)] hover:text-[var(--text-amber)]">
+                    <PackageMinus size={15} />
+                  </button>
+                )}
                 <button onClick={() => setEditingBatch({ id: b.id, qty: b.qty, produced_on: b.produced_on })} className="text-[var(--text-muted2)] hover:text-[var(--text-accent)]">
                   <Pencil size={14} />
                 </button>
@@ -200,6 +225,35 @@ export default function ProductionScreen() {
               <button onClick={saveEdit} className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-semibold rounded-lg py-2.5">Save</button>
             </div>
           </div>
+        )}
+
+        {adjustBatch && <StockAdjustModal batch={adjustBatch} onClose={() => setAdjustBatch(null)} onSaved={load} />}
+
+        {adjustments.length > 0 && (
+          <>
+            <div className="flex items-center gap-2 mt-2">
+              <PackageMinus size={14} className="text-[var(--text-muted2)]" />
+              <span className="text-[var(--text-muted2)] text-xs">Stock adjustments</span>
+            </div>
+            {adjustments.map(a => (
+              <div key={a.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-3 border-l-2 border-[var(--text-amber)]">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[var(--text-primary)] text-sm font-medium">−{a.qty} {a.skus?.name}</div>
+                    <div className="text-[var(--text-muted2)] text-xs mt-0.5">
+                      <span className="text-[var(--text-amber)]">{reasonLabel(a.reason)}</span> · {a.adjusted_on}
+                      {a.production_batches?.produced_on && ` · batch ${a.production_batches.produced_on}`}
+                      {a.notes && ` · ${a.notes}`}
+                    </div>
+                  </div>
+                  <button onClick={() => undoAdjustment(a.id)} disabled={undoingId === a.id}
+                    className="text-[var(--text-muted2)] hover:text-red-400 text-xs shrink-0">
+                    {undoingId === a.id ? '...' : 'Undo'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </>
         )}
 
         {expiredBatches.length > 0 && (

@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
+import { fetchBatchUsage } from './stockUtils'
+import StockAdjustModal from './StockAdjustModal'
 import { useSettings } from './useSettings'
 import { fuzzyMatch } from './fuzzy'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
@@ -90,6 +92,7 @@ export default function WeekPlanScreen() {
   const [matrixMap, setMatrixMap] = useState({})
   const [availableStock, setAvailableStock] = useState({}) // sku_id -> available pcs
   const [spareStock, setSpareStock] = useState({}) // sku_id -> spare pcs
+  const [showAdjust, setShowAdjust] = useState(false)
   const [matrixMeters, setMatrixMeters] = useState({})
   const [depotId, setDepotId] = useState(null)
 
@@ -107,17 +110,16 @@ export default function WeekPlanScreen() {
       .lt('plan_date', todayStr)
     setStalePlans(existingPlans || [])
 
-    const [{ data: forecast }, { data: stores }, { data: matrix }, { data: batches }, { data: delivered }] = await Promise.all([
+    const [{ data: forecast }, { data: stores }, { data: matrix }, { data: batches }, { used: consumedByBatch }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
       supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup').eq('is_active', true),
       supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds, meters'),
       supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, is_spare').gt('expires_on', localDateStr).order('produced_on'),
-      supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
+      fetchBatchUsage(),
     ])
 
     // Build available stock map — split regular vs spare
-    const consumedByBatch = {}
-    ;(delivered || []).forEach(d => { consumedByBatch[d.batch_id] = (consumedByBatch[d.batch_id] || 0) + d.qty_delivered })
+    // consumedByBatch = delivered + stock adjustments (self consumed, damaged, ...)
     const stockBySku = {}
     const spareBySku = {}
     const batchList = (batches || []).map(b => ({
@@ -304,7 +306,11 @@ export default function WeekPlanScreen() {
       loadRef.current?.()
     }
     window.addEventListener('prosa:production_confirmed', onProdConfirmed)
-    return () => window.removeEventListener('prosa:production_confirmed', onProdConfirmed)
+    window.addEventListener('prosa:stock_changed', onProdConfirmed)
+    return () => {
+      window.removeEventListener('prosa:production_confirmed', onProdConfirmed)
+      window.removeEventListener('prosa:stock_changed', onProdConfirmed)
+    }
   }, [])
 
   // Clear cache if budget setting changed
@@ -628,6 +634,7 @@ export default function WeekPlanScreen() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      {showAdjust && <StockAdjustModal onClose={() => setShowAdjust(false)} />}
       <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
         <span className="text-[var(--text-muted)] text-sm flex items-center gap-1.5">
           <>
@@ -808,7 +815,10 @@ export default function WeekPlanScreen() {
           pickupDue.forEach(s => s.skuReqs.forEach(r => { skuNames[r.sku_id] = r.name }))
           return (
             <div className="sticky top-0 z-20 bg-[var(--bg-card)] backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 shadow-[0_10px_24px_-6px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(158,234,106,0.35)] ring-1 ring-[var(--accent)]/15">
-              <div className="text-[var(--text-muted)] text-xs mb-2">Stock in hand · allocated to schedule</div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[var(--text-muted)] text-xs">Stock in hand · allocated to schedule</span>
+                <button onClick={() => setShowAdjust(true)} className="text-[var(--text-amber)] text-xs font-medium">Adjust</button>
+              </div>
               {Object.entries(availableStock).map(([skuId, total]) => {
                 const spare = spareStock[skuId] || 0
                 const totalAllocated =

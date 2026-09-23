@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { fetchBatchUsage } from './stockUtils'
 import { X, Search, Loader2 } from 'lucide-react'
 
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
@@ -29,15 +30,13 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
   const [remark, setRemark] = useState('')
 
   useEffect(() => { (async () => {
-    const [{ data: st }, { data: sk }, { data: b }, { data: dl }, { data: rdl }] = await Promise.all([
+    const [{ data: st }, { data: sk }, { data: b }, { used }, { data: rdl }] = await Promise.all([
       supabase.from('stores').select('id, name').eq('is_active', true).eq('is_depot', false).order('name'),
       supabase.from('skus').select('id, name, unit_price').eq('is_active', true).order('name'),
       supabase.from('production_batches').select('id, sku_id, produced_on, expires_on, qty').order('produced_on'),
-      supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
+      fetchBatchUsage(),
       supabase.from('delivery_lines').select('store_id, delivered_on').order('delivered_on', { ascending: false }).limit(60),
     ])
-    const used = {}
-    ;(dl || []).forEach(d => { used[d.batch_id] = (used[d.batch_id] || 0) + d.qty_delivered })
     const seen = new Set()
     const recent = []
     ;(rdl||[]).forEach(x => { if (!seen.has(x.store_id)) { seen.add(x.store_id); recent.push(x.store_id) } })

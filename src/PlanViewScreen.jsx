@@ -414,6 +414,13 @@ function _tokenMatch(q, name) {
   return t.split(/\s+/).filter(Boolean).every(x => n.includes(x))
 }
 
+// Batch stock left = produced - delivered - adjusted (self consumed, damaged, ...)
+function batchAvail(b) {
+  const delivered = (b.delivery_lines || []).reduce((n, l) => n + (l.qty_delivered || 0), 0)
+  const adjusted = (b.stock_adjustments || []).reduce((n, a) => n + (a.qty || 0), 0)
+  return b.qty - delivered - adjusted
+}
+
 export default function PlanViewScreen() {
   const [dates, setDates] = useState([])
   const [selectedDate, setSelectedDate] = useState(today())
@@ -487,7 +494,7 @@ export default function PlanViewScreen() {
 
   async function loadBatches() {
     const { data } = await supabase.from('production_batches')
-      .select('id, sku_id, produced_on, expires_on, qty, delivery_lines(qty_delivered)')
+      .select('id, sku_id, produced_on, expires_on, qty, delivery_lines(qty_delivered), stock_adjustments(qty)')
       .gt('expires_on', today())
       .order('produced_on')
     setBatches(data || [])
@@ -607,6 +614,11 @@ export default function PlanViewScreen() {
   }, [])
 
   useEffect(() => { loadDates(); loadMatrix(); loadBatches() }, [])
+  useEffect(() => {
+    const fn = () => loadBatches()
+    window.addEventListener('prosa:stock_changed', fn)
+    return () => window.removeEventListener('prosa:stock_changed', fn)
+  }, [])
   useEffect(() => { loadPlan(selectedDate) }, [selectedDate])
 
   useEffect(() => {
@@ -756,8 +768,7 @@ export default function PlanViewScreen() {
     return batches.filter(b => {
       if (b.sku_id !== skuId) return false
       if (b.expires_on < today()) return false
-      const delivered = (b.delivery_lines || []).reduce((n, l) => n + (l.qty_delivered || 0), 0)
-      return (b.qty - delivered) > 0
+      return batchAvail(b) > 0
     })
   }
 
@@ -1416,7 +1427,7 @@ export default function PlanViewScreen() {
                     <div className="flex flex-col gap-1.5">
                       {skuBatches.length === 0 && <p className="text-[var(--text-gold)] text-xs">⚠ No active batches for this product</p>}
                       {skuBatches.map(b => {
-                        const avail = Math.max(0, b.qty - (b.delivery_lines || []).reduce((n, l) => n + (l.qty_delivered || 0), 0))
+                        const avail = Math.max(0, batchAvail(b))
                         const selected = line.batch_id === b.id
                         return (
                           <button key={b.id}

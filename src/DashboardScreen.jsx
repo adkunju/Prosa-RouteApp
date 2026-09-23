@@ -1,6 +1,8 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { fetchBatchUsage } from './stockUtils'
+import StockAdjustModal from './StockAdjustModal'
 import StoreMap from './StoreMap'
 import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
@@ -158,19 +160,24 @@ export default function DashboardScreen() {
     }
   }
 
+  const [stockTick, setStockTick] = useState(0)
+  const [showAdjust, setShowAdjust] = useState(false)
+  useEffect(() => {
+    const fn = () => setStockTick(t => t + 1)
+    window.addEventListener('prosa:stock_changed', fn)
+    return () => window.removeEventListener('prosa:stock_changed', fn)
+  }, [])
   useEffect(() => { (async () => {
-    const [{ data: b }, { data: dl }] = await Promise.all([
+    const [{ data: b }, { used }] = await Promise.all([
       supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, is_spare, skus(name)').order('expires_on'),
-      supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
+      fetchBatchUsage(),
     ])
-    const used = {}
-    ;(dl || []).forEach(x => { used[x.batch_id] = (used[x.batch_id] || 0) + x.qty_delivered })
     const today = new Date().toISOString().slice(0, 10)
     const allBatches = (b || [])
       .map(x => ({ ...x, available: x.qty - (used[x.id] || 0) }))
       .filter(x => x.available > 0 && x.expires_on >= today)
     setStock(allBatches)
-  })() }, [])
+  })() }, [stockTick])
 
   const [selectedDate, setSelectedDate] = useState(new Date().toLocaleDateString('en-CA'))
   const [showAllDeliveries, setShowAllDeliveries] = useState(false)
@@ -207,6 +214,7 @@ export default function DashboardScreen() {
 
   return (
     <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">
+      {showAdjust && <StockAdjustModal onClose={() => setShowAdjust(false)} />}
       <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
         <div className="text-[var(--text-muted)] text-xs mb-1">Sales this month</div>
         <div className="flex items-end justify-between gap-2">
@@ -226,7 +234,10 @@ export default function DashboardScreen() {
       <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
         <div className="flex items-center justify-between mb-2">
           <span className="text-[var(--text-muted)] text-xs">Stock in hand</span>
-          <span className="text-[var(--text-muted2)] text-xs">{stock.filter(b => !b.is_spare).length} batch{stock.filter(b => !b.is_spare).length !== 1 ? 'es' : ''}{stock.some(b => b.is_spare) ? ` + spare` : ''}</span>
+          <span className="flex items-center gap-2">
+            <span className="text-[var(--text-muted2)] text-xs">{stock.filter(b => !b.is_spare).length} batch{stock.filter(b => !b.is_spare).length !== 1 ? 'es' : ''}{stock.some(b => b.is_spare) ? ` + spare` : ''}</span>
+            {stock.length > 0 && <button onClick={() => setShowAdjust(true)} className="text-[var(--text-amber)] text-xs font-medium">Adjust</button>}
+          </span>
         </div>
         {stock.length === 0 ? (
           <p className="text-[var(--text-muted2)] text-sm">Nothing in stock</p>

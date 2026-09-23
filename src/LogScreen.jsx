@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { Plus, X, CheckCircle, Trash2, ChevronDown, Save } from 'lucide-react'
+import { Plus, X, CheckCircle, Trash2, ChevronDown, Save, PackageMinus } from 'lucide-react'
+import { notifyStockChanged, reasonLabel } from './stockUtils'
+import StockAdjustModal from './StockAdjustModal'
 
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 const today = () => localDate()
@@ -22,20 +24,35 @@ export default function LogScreen() {
   const [lines, setLines] = useState([emptyLine(1)])
   const [nextId, setNextId] = useState(2)
   const [deleting, setDeleting] = useState(null)
+  const [adjustments, setAdjustments] = useState([])
+  const [showAdjust, setShowAdjust] = useState(false)
 
   async function load() {
-    const [{ data: st }, { data: sk }, { data: ba }, { data: rv }] = await Promise.all([
+    const [{ data: st }, { data: sk }, { data: ba }, { data: rv }, { data: adj }] = await Promise.all([
       supabase.from('stores').select('id, name').eq('is_active', true).eq('is_depot', false).order('name'),
       supabase.from('skus').select('id, name').eq('is_active', true).order('name'),
       supabase.from('production_batches').select('id, sku_id, produced_on, expires_on, qty').gt('expires_on', today()).order('expires_on'),
       supabase.from('delivery_lines')
         .select('id, delivered_on, qty_delivered, unit_price, is_offer, sku_id, plan_stop_id, store_id, skus(name), plan_stops(store_id, stores(name)), store:stores!delivery_lines_store_id_fkey(name), returns(id, qty_returned), production_batches(produced_on)')
         .order('delivered_on', { ascending: false }).limit(40),
+      supabase.from('stock_adjustments').select('id, qty, reason, notes, adjusted_on, skus(name), production_batches(produced_on)')
+        .order('adjusted_on', { ascending: false }).order('created_at', { ascending: false }).limit(40),
     ])
     if (st) setStores(st)
     if (sk) setSkus(sk)
     if (ba) setBatches(ba)
     if (rv) setRecentVisits(rv)
+    // Only show adjustments within the date span the visit list covers (older ones are on the Production screen)
+    const oldestVisit = rv?.length === 40 ? rv[rv.length - 1].delivered_on : ''
+    setAdjustments((adj || []).filter(a => a.adjusted_on >= oldestVisit))
+  }
+
+  async function undoAdjustment(id) {
+    setDeleting(id)
+    await supabase.from('stock_adjustments').delete().eq('id', id)
+    notifyStockChanged()
+    await load()
+    setDeleting(null)
   }
 
   useEffect(() => { load() }, [])
@@ -158,16 +175,26 @@ export default function LogScreen() {
   const grouped = recentVisits.reduce((acc, v) => {
     const d = v.delivered_on; if (!acc[d]) acc[d] = []; acc[d].push(v); return acc
   }, {})
+  const adjByDate = adjustments.reduce((acc, a) => {
+    const d = a.adjusted_on; if (!acc[d]) acc[d] = []; acc[d].push(a); if (!grouped[d]) grouped[d] = []; return acc
+  }, {})
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
       <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
         <span className="text-[var(--text-muted)] text-sm">Delivery log</span>
+        <div className="flex items-center gap-2">
+        <button onClick={() => setShowAdjust(true)}
+          className="bg-[var(--bg-input)] text-[var(--text-amber)] text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+          <PackageMinus size={15} /> Adjust
+        </button>
         <button onClick={() => setShowForm(true)}
           className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors">
           <Plus size={15} /> Log visit
         </button>
+        </div>
       </div>
+      {showAdjust && <StockAdjustModal onClose={() => setShowAdjust(false)} onSaved={load} />}
 
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">
         {Object.keys(grouped).length === 0 && (
@@ -180,6 +207,26 @@ export default function LogScreen() {
           <div key={d}>
             <div className="text-[var(--text-muted2)] text-xs font-medium mb-2 uppercase tracking-wide">{d}</div>
             <div className="flex flex-col gap-2">
+              {(adjByDate[d] || []).map(a => (
+                <div key={a.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-3 border-l-2 border-[var(--text-amber)]">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[var(--text-primary)] text-sm font-medium flex items-center gap-1.5">
+                        <PackageMinus size={13} className="text-[var(--text-amber)]" /> Stock adjusted
+                      </div>
+                      <div className="text-[var(--text-muted)] text-xs mt-0.5">
+                        {a.skus?.name} · −{a.qty} pcs · <span className="text-[var(--text-amber)]">{reasonLabel(a.reason)}</span>
+                        {a.production_batches?.produced_on && <span className="text-[var(--text-muted2)]"> · batch {a.production_batches.produced_on}</span>}
+                        {a.notes && <span className="text-[var(--text-muted2)]"> · {a.notes}</span>}
+                      </div>
+                    </div>
+                    <button onClick={() => undoAdjustment(a.id)} disabled={deleting === a.id}
+                      className="text-[var(--text-faint)] hover:text-red-400 transition-colors shrink-0">
+                      {deleting === a.id ? '...' : <Trash2 size={15} />}
+                    </button>
+                  </div>
+                </div>
+              ))}
               {lines.map(line => (
                 <div key={line.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-3">
                   <div className="flex items-start justify-between gap-2">
