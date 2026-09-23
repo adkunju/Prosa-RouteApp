@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { syncMatrix } from './matrixUtils'
 import { useGeolocation, haversineKm } from './useGeolocation'
 import { fuzzyMatch } from './fuzzy'
 import StoreDetailModal from './StoreDetailModal'
@@ -99,6 +100,7 @@ export default function ManageStoresList() {
       })
     }
 
+    if (newStore) syncMatrix().catch(e => console.error('travel matrix sync failed', e))
     await loadStores()
     setShowAdd(false)
     setSearchQuery(''); setSelectedPlace(null); setServiceMinutes(15)

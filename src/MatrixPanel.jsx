@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
+import { syncMatrix, countMissing } from './matrixUtils'
 import { RefreshCw, Route, Loader2, CheckCircle } from 'lucide-react'
 
-const ORS_KEY = import.meta.env.VITE_ORS_KEY
-const ORS_URL = 'https://psyfqfyxibrnfoaggfsl.supabase.co/functions/v1/ors-matrix'
 
 export default function MatrixPanel({ onClose }) {
   const [lastComputed, setLastComputed] = useState(null)
@@ -12,6 +11,7 @@ export default function MatrixPanel({ onClose }) {
   const [rebuilding, setRebuilding] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
+  const [missing, setMissing] = useState(0)
 
   async function loadStatus() {
     const { data: { user } } = await supabase.auth.getUser()
@@ -38,81 +38,22 @@ export default function MatrixPanel({ onClose }) {
       .eq('is_d2c', false)
       .not('lat', 'is', null)
     setStoreCount(stores?.length || 0)
+    setMissing(await countMissing().catch(() => 0))
   }
 
   useEffect(() => { loadStatus() }, [])
 
-  async function rebuildMatrix() {
+  async function runSync(full) {
     setRebuilding(true)
     setError('')
     setDone(false)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-
-      // Get all routable stores (depot + regular, excluding pickup/D2C)
-      const { data: stores, error: sErr } = await supabase
-        .from('stores')
-        .select('id, name, lat, lng')
-        .eq('is_active', true)
-        .eq('is_pickup', false)
-        .eq('is_d2c', false)
-        .not('lat', 'is', null)
-        .not('lng', 'is', null)
-
-      if (sErr) throw sErr
-      if (!stores || stores.length < 2) throw new Error('Need at least 2 stores with coordinates')
-
-      const locations = stores.map(s => [s.lng, s.lat])
-
-      const res = await fetch(ORS_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          locations,
-          metrics: ['distance', 'duration'],
-        }),
-      })
-
-      if (!res.ok) {
-        const errText = await res.text()
-        throw new Error(`ORS API error: ${res.status} — ${errText.slice(0, 200)}`)
-      }
-
-      const data = await res.json()
-      const { durations, distances } = data
-
-      // Delete old matrix for this user
-      await supabase.from('travel_matrix').delete().eq('user_id', user.id)
-
-      // Build rows for every pair (skip self-pairs)
-      const rows = []
-      for (let i = 0; i < stores.length; i++) {
-        for (let j = 0; j < stores.length; j++) {
-          if (i === j) continue
-          rows.push({
-            user_id: user.id,
-            from_store_id: stores[i].id,
-            to_store_id: stores[j].id,
-            seconds: Math.round(durations[i][j]),
-            meters: Math.round(distances[i][j]),
-          })
-        }
-      }
-
-      // Insert in chunks of 200 to avoid payload limits
-      for (let i = 0; i < rows.length; i += 200) {
-        const chunk = rows.slice(i, i + 200)
-        const { error: insErr } = await supabase.from('travel_matrix').insert(chunk)
-        if (insErr) throw insErr
-      }
-
+      const r = await syncMatrix({ full })
       await loadStatus()
-      setDone(true)
-      setTimeout(() => setDone(false), 2000)
+      setDone(r.missing ? `Updated ${r.missing} store${r.missing !== 1 ? 's' : ''}` : 'Already up to date')
+      setTimeout(() => setDone(false), 2500)
     } catch (e) {
-      setError(e.message || 'Failed to rebuild matrix')
+      setError(e.message || 'Failed to update travel times')
     }
     setRebuilding(false)
   }
@@ -135,21 +76,22 @@ export default function MatrixPanel({ onClose }) {
             : 'Never computed'}
         </div>
         {error && <div className="text-xs text-red-400 bg-red-900/30 rounded p-2">{error}</div>}
+        {missing > 0 && <div className="text-xs text-[var(--text-gold)]">{missing} store{missing !== 1 ? 's have' : ' has'} no travel times yet</div>}
         <button
-          onClick={rebuildMatrix}
+          onClick={() => runSync(false)}
           disabled={rebuilding}
           className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white font-medium rounded-lg py-2.5 flex items-center justify-center gap-2 transition-colors"
         >
-          {rebuilding ? (
-            <><Loader2 size={16} className="animate-spin" /> Computing...</>
-          ) : done ? (
-            <><CheckCircle size={16} /> Done!</>
-          ) : (
-            <><RefreshCw size={16} /> Rebuild Matrix</>
-          )}
+          {rebuilding ? <><Loader2 size={16} className="animate-spin" /> Computing...</>
+            : done ? <><CheckCircle size={16} /> {done}</>
+            : <><RefreshCw size={16} /> {missing > 0 ? 'Fill missing stores' : 'Check for missing stores'}</>}
+        </button>
+        <button onClick={() => runSync(true)} disabled={rebuilding}
+          className="text-xs text-[var(--text-muted2)] hover:text-[var(--text-primary)] disabled:opacity-50 self-center">
+          Recompute all (after road changes)
         </button>
         <p className="text-xs text-[var(--text-muted2)]">
-          Computes drive time & distance between all {storeCount} stores in a single request (1 of your 500 monthly ORS requests).
+          New stores get travel times automatically. Filling missing stores uses 2 of your 500 monthly route requests; recompute all uses 1 per ~{Math.max(1, Math.floor(3500 / Math.max(1, storeCount)))} stores.
         </p>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { syncMatrix } from './matrixUtils'
 import { Search, MapPin, Star, Plus, Check, Loader2, RefreshCw, ChevronDown, Ban, EyeOff, Eye, X, Settings, Camera } from 'lucide-react'
 
 const KEY = import.meta.env.VITE_GOOGLE_PLACES_KEY
@@ -251,6 +252,7 @@ export default function ProspectFinderScreen() {
         is_depot: false,
       })
       if (insErr) throw insErr
+      syncMatrix().catch(e => console.error('travel matrix sync failed', e))
       setExistingPlaceIds(prev => new Set([...prev, p.place_id]))
       setResults(rs => rs.map(r => r.place_id === p.place_id ? { ...r, existing: true } : r))
     } catch (e) {

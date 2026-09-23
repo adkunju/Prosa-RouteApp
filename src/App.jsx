@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
 import AuthGate from './AuthGate'
+import { syncMatrix } from './matrixUtils'
 import DashboardScreen from './DashboardScreen'
 import ForecastScreen from './ForecastScreen'
 import AllocationScreen from './AllocationScreen'
@@ -100,6 +101,15 @@ function Shell() {
     }
     window.addEventListener('prosa:goto', go)
     return () => window.removeEventListener('prosa:goto', go)
+  }, [])
+  // Quietly fill travel times for any store that has none (no route-service call if nothing is missing)
+  useEffect(() => {
+    syncMatrix().then(r => {
+      if (r.missing) {
+        sessionStorage.removeItem('prosa_schedule_cache')
+        window.dispatchEvent(new CustomEvent('prosa:matrix_updated'))
+      }
+    }).catch(e => console.error('travel matrix sync failed', e))
   }, [])
   return (
     <div className="h-screen bg-[var(--bg-root)] flex flex-col relative">

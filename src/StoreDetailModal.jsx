@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { syncMatrix } from './matrixUtils'
 import { useGeolocation, haversineKm } from './useGeolocation'
 import { X, Search, Loader2, Phone, MessageCircle, Trash2, Plus, Clock, MapPin, RefreshCw, Truck } from 'lucide-react'
 
@@ -166,6 +167,11 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
       updates.lng = selectedPlace.place.location?.longitude ?? updates.lng
     }
     await supabase.from('stores').update(updates).eq('id', store.id)
+    // Moved pin or pickup toggled → travel times for this store must be recomputed
+    const moved = Number(updates.lat) !== Number(store.lat) || Number(updates.lng) !== Number(store.lng)
+    if (moved || !!updates.is_pickup !== !!store.is_pickup) {
+      syncMatrix({ refreshIds: moved ? [store.id] : [] }).catch(e => console.error('travel matrix sync failed', e))
+    }
     setSavingDetail(false)
     setSavedFlash(true)
     setTimeout(() => setSavedFlash(false), 1200)

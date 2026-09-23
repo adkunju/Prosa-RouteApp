@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
+import { fetchMatrix } from './matrixUtils'
 import { fetchBatchUsage } from './stockUtils'
 import StockAdjustModal from './StockAdjustModal'
 import { useSettings } from './useSettings'
@@ -113,7 +114,7 @@ export default function WeekPlanScreen() {
     const [{ data: forecast }, { data: stores }, { data: matrix }, { data: batches }, { used: consumedByBatch }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
       supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup').eq('is_active', true),
-      supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds, meters'),
+      fetchMatrix().then(data => ({ data }), () => ({ data: [] })),
       supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, is_spare').gt('expires_on', localDateStr).order('produced_on'),
       fetchBatchUsage(),
     ])
@@ -307,7 +308,9 @@ export default function WeekPlanScreen() {
     }
     window.addEventListener('prosa:production_confirmed', onProdConfirmed)
     window.addEventListener('prosa:stock_changed', onProdConfirmed)
+    window.addEventListener('prosa:matrix_updated', onProdConfirmed)
     return () => {
+      window.removeEventListener('prosa:matrix_updated', onProdConfirmed)
       window.removeEventListener('prosa:production_confirmed', onProdConfirmed)
       window.removeEventListener('prosa:stock_changed', onProdConfirmed)
     }
@@ -347,7 +350,7 @@ export default function WeekPlanScreen() {
           ;(async () => {
           const [{ data: storesData }, { data: matrixData }] = await Promise.all([
             supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup').eq('is_active', true),
-            supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds, meters'),
+            fetchMatrix().then(data => ({ data }), () => ({ data: [] })),
           ])
           const depot = (storesData || []).find(s => s.is_depot)
           setAllStores((storesData || []).filter(s => !s.is_depot && !s.is_pickup))

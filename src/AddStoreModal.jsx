@@ -1,42 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { syncMatrix } from './matrixUtils'
 const ORS_URL = 'https://psyfqfyxibrnfoaggfsl.supabase.co/functions/v1/ors-matrix'
 
-async function rebuildMatrixSilent() {
-  try {
-    const { data: { user } } = await supabase.auth.getUser()
-    const { data: stores } = await supabase.from('stores')
-      .select('id, lat, lng').eq('is_active', true).eq('is_pickup', false)
-      .eq('is_d2c', false).not('lat', 'is', null).not('lng', 'is', null)
-    if (!stores || stores.length < 2) return
-    const locations = stores.map(s => [s.lng, s.lat])
-    const res = await fetch(ORS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ locations, metrics: ['distance', 'duration'] }),
-    })
-    if (!res.ok) return
-    const data = await res.json()
-    const { durations, distances } = data
-    await supabase.from('travel_matrix').delete().eq('user_id', user.id)
-    const rows = []
-    for (let i = 0; i < stores.length; i++) {
-      for (let j = 0; j < stores.length; j++) {
-        if (i === j) continue
-        rows.push({
-          user_id: user.id,
-          from_store_id: stores[i].id,
-          to_store_id: stores[j].id,
-          seconds: Math.round(durations[i][j]),
-          meters: Math.round(distances[i][j]),
-        })
-      }
-    }
-    for (let k = 0; k < rows.length; k += 100) {
-      await supabase.from('travel_matrix').insert(rows.slice(k, k + 100))
-    }
-  } catch { /* silent — user can rebuild manually in Settings */ }
-}
 import { X, Search, Loader2, Truck, Clock } from 'lucide-react'
 
 const PLACES_KEY = import.meta.env.VITE_GOOGLE_PLACES_KEY
@@ -146,8 +112,9 @@ export default function AddStoreModal({ onClose, onSaved }) {
         store_id: newStore.id, name: 'Store Phone', phone,
       })
     }
+    // Fill travel times for the new store BEFORE closing (the Dashboard reloads the page on save)
+    if (newStore) await syncMatrix().catch(e => console.error('travel matrix sync failed', e))
     setSaving(false)
-    rebuildMatrixSilent() // fire-and-forget
     onSaved?.(newStore)
     onClose?.()
   }

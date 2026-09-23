@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from './supabaseClient'
+import { fetchMatrix } from './matrixUtils'
 import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
@@ -176,7 +177,7 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
       supabase.from('stores').select('id,name,pipeline_status').eq('is_active',true).eq('is_depot',false).eq('exclude_from_forecast',false).order('name'),
       supabase.from('stores').select('id,name,pipeline_status').eq('is_active',true).eq('is_depot',false).not('pipeline_status','in','("onboard","dropped")').order('name'),
       supabase.from('store_sales_summary').select('store_id,visit_count,revenue,last_visit,days_since_visit'),
-      supabase.from('travel_matrix').select('from_store_id,to_store_id,seconds'),
+      fetchMatrix('from_store_id, to_store_id, seconds').then(data => ({ data }), () => ({ data: [] })),
       supabase.from('stores').select('id').eq('is_depot',true).maybeSingle(),
     ])
     const fcMap = {}
@@ -507,7 +508,7 @@ export default function PlanViewScreen() {
     const coordMap = {}
     allStores?.forEach(s => { coordMap[s.id] = { lat: s.lat, lng: s.lng } })
     setStoreCoords(coordMap)
-    const { data: matrix } = await supabase.from('travel_matrix').select('from_store_id, to_store_id, seconds, meters')
+    const matrix = await fetchMatrix().catch(() => [])
     const secMap = {}, metMap = {}
     matrix?.forEach(m => {
       secMap[`${m.from_store_id}_${m.to_store_id}`] = m.seconds
@@ -616,8 +617,10 @@ export default function PlanViewScreen() {
   useEffect(() => { loadDates(); loadMatrix(); loadBatches() }, [])
   useEffect(() => {
     const fn = () => loadBatches()
+    const fm = () => loadMatrix()
     window.addEventListener('prosa:stock_changed', fn)
-    return () => window.removeEventListener('prosa:stock_changed', fn)
+    window.addEventListener('prosa:matrix_updated', fm)
+    return () => { window.removeEventListener('prosa:stock_changed', fn); window.removeEventListener('prosa:matrix_updated', fm) }
   }, [])
   useEffect(() => { loadPlan(selectedDate) }, [selectedDate])
 
