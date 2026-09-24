@@ -1,6 +1,5 @@
 import { supabase } from './supabaseClient'
 
-const ORS_URL = 'https://psyfqfyxibrnfoaggfsl.supabase.co/functions/v1/ors-matrix'
 const ORS_MAX_CELLS = 3500 // ORS free-tier limit per matrix request (sources × destinations)
 const PAGE = 1000          // Supabase returns at most 1000 rows per request
 
@@ -26,14 +25,16 @@ async function routableStores() {
 }
 
 async function orsMatrix(locations, sources, destinations) {
-  const res = await fetch(ORS_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ locations, sources, destinations, metrics: ['distance', 'duration'] }),
+  // functions.invoke sends the logged-in user's token — the edge function rejects anyone else
+  const { data, error } = await supabase.functions.invoke('ors-matrix', {
+    body: { locations, sources, destinations, metrics: ['distance', 'duration'] },
   })
-  if (!res.ok) throw new Error(`Route service error ${res.status}: ${(await res.text()).slice(0, 150)}`)
-  const data = await res.json()
-  if (!data.durations) throw new Error('Route service returned no durations')
+  if (error) {
+    let detail = error.message
+    try { detail = (await error.context?.text?.())?.slice(0, 150) || detail } catch { /* ignore */ }
+    throw new Error('Route service error: ' + detail)
+  }
+  if (!data?.durations) throw new Error('Route service returned no durations')
   return data
 }
 

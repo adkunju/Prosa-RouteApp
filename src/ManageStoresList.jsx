@@ -32,9 +32,19 @@ export default function ManageStoresList() {
   }
   useEffect(() => { loadStores() }, [])
 
+  // Two taps: first arms it ("Tap to remove"), second within 3s removes. Stops accidental
+  // deletes from a stray tap while scrolling.
+  const [confirmId, setConfirmId] = useState(null)
   async function deleteStore(id) {
+    if (confirmId !== id) {
+      setConfirmId(id)
+      setTimeout(() => setConfirmId(c => (c === id ? null : c)), 3000)
+      return
+    }
+    setConfirmId(null)
     setDeleting(id)
-    await supabase.from('stores').update({ is_active: false }).eq('id', id)
+    const { error } = await supabase.from('stores').update({ is_active: false }).eq('id', id)
+    if (error) alert('Could not remove store: ' + error.message)
     await loadStores()
     setDeleting(null)
   }
@@ -160,8 +170,9 @@ export default function ManageStoresList() {
               )}
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <span onClick={e => { e.stopPropagation(); deleteStore(s.id) }} className="text-[var(--text-faint)] hover:text-red-400 p-1">
-                {deleting === s.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+              <span onClick={e => { e.stopPropagation(); deleteStore(s.id) }}
+                className={`p-1 ${confirmId === s.id ? 'text-red-400 text-xs font-medium' : 'text-[var(--text-faint)] hover:text-red-400'}`}>
+                {deleting === s.id ? <Loader2 size={15} className="animate-spin" /> : confirmId === s.id ? 'Tap to remove' : <Trash2 size={15} />}
               </span>
               <ChevronRight size={15} className="text-[var(--text-faint)]" />
             </div>

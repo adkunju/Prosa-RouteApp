@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { syncMatrix } from './matrixUtils'
-const ORS_URL = 'https://psyfqfyxibrnfoaggfsl.supabase.co/functions/v1/ors-matrix'
 
 import { X, Search, Loader2, Truck, Clock } from 'lucide-react'
 
