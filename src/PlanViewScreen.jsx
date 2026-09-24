@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from './supabaseClient'
+import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
 import { fetchMatrix } from './matrixUtils'
 import { notifyStockChanged } from './stockUtils'
 import QuickDeliverModal from './QuickDeliverModal'
@@ -465,6 +466,7 @@ export default function PlanViewScreen() {
   const [completeForm, setCompleteForm] = useState({})
   const [completing, setCompleting] = useState(false)
   const [completeError, setCompleteError] = useState('')
+  const [reminder, setReminder] = useState(EMPTY_REMINDER)
   const [toast, setToast] = useState('')
   const [batches, setBatches] = useState([])
   const [useLiveOrigin, setUseLiveOrigin] = useState(false)
@@ -804,6 +806,7 @@ export default function PlanViewScreen() {
     setExtraReqs([])
     setAddSkuOpen(false)
     setCompleteError('')
+    setReminder(EMPTY_REMINDER)
     setActiveCompleteStop(stop)
 
     const [{ data: skus }, { data: prior }, { data: storePrices }, { data: lastPrices }] = await Promise.all([
@@ -994,6 +997,8 @@ export default function PlanViewScreen() {
         return fail('Could not save returns: ' + rErr.message + '. Nothing was recorded — try again.')
       }
     }
+    const remErr = await saveReminder(stop.store_id, reminder)
+    if (remErr) setToast('Delivery saved, but the call reminder did not: ' + remErr)
     setCompletedStopIds(s => new Set([...s, stop.id]))
     setCompleting(false)
     setActiveCompleteStop(null)
@@ -1611,6 +1616,7 @@ export default function PlanViewScreen() {
                 </button>
               )
             })()}
+            <ReminderPicker value={reminder} onChange={setReminder} />
           </div>
           <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
             {completeError && <p className="text-red-400 text-xs mb-2">{completeError}</p>}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
 import { fetchBatchUsage, notifyStockChanged } from './stockUtils'
 import { X, Search, Loader2 } from 'lucide-react'
 
@@ -30,6 +31,7 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
   const [remark, setRemark] = useState('')
   const [returnSources, setReturnSources] = useState({}) // sku_id -> earlier deliveries a return can come from
   const [saveError, setSaveError] = useState('')
+  const [reminder, setReminder] = useState(EMPTY_REMINDER)
 
   useEffect(() => { (async () => {
     const [{ data: st }, { data: sk }, { data: b }, { used }, { data: rdl }] = await Promise.all([
@@ -100,6 +102,7 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
       init[sk.id] = { qty: '', batch_id: batchesFor(sk.id)[0]?.id || '', returns: [{ dl_id: '', qty: '' }], price, is_offer: false, store_balance: '' }
     })
     setRemark('')
+    setReminder(EMPTY_REMINDER)
     setLines(init)
     setSelectedSkuIds([])
 
@@ -197,23 +200,18 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
     // If visit-only (no delivery) save remark to call_logs via plan_stops is not applicable
     // Record as a store note instead using a simple insert
     if (remark.trim() && !Object.values(lines).some(l => Number(l?.qty) > 0)) {
-      // Pure visit — log to call_logs against first contact
-      const { data: contacts } = await supabase.from('store_contacts').select('id').eq('store_id', store.id).limit(1)
-      if (contacts?.[0]) {
-        await supabase.from('call_logs').insert({
-          store_contact_id: contacts[0].id,
-          note: remark.trim(),
-          called_at: new Date().toISOString(),
-        })
-      }
+      // Pure visit — keep the note in the store's log
+      await supabase.from('call_logs').insert({ store_id: store.id, kind: 'visit', note: remark.trim(), called_at: new Date().toISOString() })
     }
+    const remErr = await saveReminder(store.id, reminder)
+    if (remErr) alert('Delivery saved, but the call reminder did not: ' + remErr)
     notifyStockChanged()
     setSaving(false)
     onSaved?.()
     onClose?.()
   }
 
-  const anything = remark.trim().length > 0 || selectedSkuIds.some(id => Number(lines[id]?.qty) > 0 || retTotal(lines[id]) > 0)
+  const anything = remark.trim().length > 0 || (reminder.open && !!reminder.date) || selectedSkuIds.some(id => Number(lines[id]?.qty) > 0 || retTotal(lines[id]) > 0)
 
   return (
     <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
@@ -256,6 +254,7 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
               placeholder="Optional — what happened at this visit?"
               rows={2}
               className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] resize-none" />
+            <div className="mt-3"><ReminderPicker value={reminder} onChange={setReminder} /></div>
           </div>
         )}
         {store && selectedSkuIds.map(skuId => {

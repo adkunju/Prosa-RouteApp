@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { Plus, X, CheckCircle, Trash2, ChevronDown, Save, PackageMinus } from 'lucide-react'
 import { notifyStockChanged, reasonLabel } from './stockUtils'
+import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
 import StockAdjustModal from './StockAdjustModal'
 
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
@@ -30,6 +31,7 @@ export default function LogScreen() {
   const [confirmDelete, setConfirmDelete] = useState(null)
   const [editError, setEditError] = useState('')
   const [saveError, setSaveError] = useState('')
+  const [reminder, setReminder] = useState(EMPTY_REMINDER)
   const [showAdjust, setShowAdjust] = useState(false)
 
   async function load() {
@@ -159,7 +161,7 @@ export default function LogScreen() {
   function formValid() { return store_id && lines.every(lineValid) }
 
   function resetForm() {
-    setShowForm(false); setStoreId(''); setDate(today())
+    setShowForm(false); setStoreId(''); setDate(today()); setReminder(EMPTY_REMINDER)
     setLines([emptyLine(1)]); setNextId(2)
   }
 
@@ -244,6 +246,8 @@ export default function LogScreen() {
       setSaveError('Some lines did not save: ' + errs.join('; ') + '. Check the log before re-entering.')
       await load(); setSaving(false); return
     }
+    const remErr = await saveReminder(store_id, reminder)
+    if (remErr) { setSaveError('Visit saved, but the call reminder did not: ' + remErr); await load(); setSaving(false); return }
     await load(); setSaving(false); setSaved(true)
     setTimeout(() => { setSaved(false); resetForm() }, 1200)
   }
@@ -587,6 +591,7 @@ export default function LogScreen() {
               className="flex items-center gap-2 text-[var(--text-accent)] hover:text-[var(--text-accent2)] text-sm font-medium py-2 transition-colors">
               <Plus size={16} /> Add item
             </button>
+            <ReminderPicker value={reminder} onChange={setReminder} />
           </div>
 
           <div className="p-4 border-t border-[var(--bg-input)] shrink-0">

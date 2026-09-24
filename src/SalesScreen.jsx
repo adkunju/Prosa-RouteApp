@@ -5,7 +5,7 @@ import ContactButtons, { useStoreContacts } from './ContactButtons'
 import PipelineTag from './PipelineTag'
 import { useGeolocation, haversineKm } from './useGeolocation'
 import { TrendingUp, TrendingDown, AlertTriangle, Package, Star, ClipboardList } from 'lucide-react'
-import { CallLogModal } from './FollowupsCard'
+import { CallLogModal, openFollowups } from './FollowupsCard'
 
 function fmt(n) { return `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` }
 function pct(n) { if (n === null || n === undefined) return null; const v = Number(n); return `${v > 0 ? '+' : ''}${v.toFixed(1)}%` }
@@ -29,7 +29,7 @@ function LastCall({ c, onOpen }) {
   const due = c.follow_up_on && c.follow_up_on <= localISO()
   return (
     <button onClick={onOpen} className="w-full text-left pt-1.5 border-t border-white/5 flex items-start gap-2">
-      <span className="text-[11px] shrink-0 mt-px">📞</span>
+      <span className="text-[11px] shrink-0 mt-px">{c.kind === 'reminder' ? '📌' : c.kind === 'visit' ? '🚚' : '📞'}</span>
       <span className="flex-1 min-w-0">
         <span className="text-[var(--text-muted)] text-xs">{fmtShort(localISO(new Date(c.called_at)))}</span>
         {c.note && <span className="text-[var(--text-secondary)] text-xs whitespace-pre-wrap break-words"> · {c.note}</span>}
@@ -150,15 +150,22 @@ export default function SalesScreen() {
   useEffect(() => {
     const load = async () => {
       const { data: logs } = await supabase.from('call_logs')
-        .select('store_id, note, follow_up_on, called_at').not('store_id', 'is', null)
-        .order('called_at', { ascending: false }).limit(500)
+        .select('store_id, kind, note, follow_up_on, called_at').not('store_id', 'is', null)
+        .order('called_at', { ascending: false }).limit(2000)
+      // Latest entry for the text; earliest OPEN follow-up for the date
+      const nextDue = {}
+      openFollowups(logs || []).forEach(l => {
+        if (!nextDue[l.store_id] || l.follow_up_on < nextDue[l.store_id]) nextDue[l.store_id] = l.follow_up_on
+      })
       const map = {}
-      ;(logs || []).forEach(l => { if (!map[l.store_id]) map[l.store_id] = l })
+      ;(logs || []).forEach(l => { if (!map[l.store_id]) map[l.store_id] = { ...l, follow_up_on: nextDue[l.store_id] || null } })
       setLastCalls(map)
     }
     load()
+    const bump = () => setReloadKey(k => k + 1)
     window.addEventListener('prosa:call_logged', load)
-    return () => window.removeEventListener('prosa:call_logged', load)
+    window.addEventListener('prosa:pipeline_changed', bump)
+    return () => { window.removeEventListener('prosa:call_logged', load); window.removeEventListener('prosa:pipeline_changed', bump) }
   }, [])
 
   useEffect(() => { (async () => {

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 
-const STATUSES = ['prospect','onboard','warm','cold','dormant','dropped']
+export const STATUSES = ['prospect','onboard','warm','cold','dormant','dropped']
 
 const COLORS = {
   prospect:  'bg-slate-700/60 text-slate-300 border-slate-600/40',
