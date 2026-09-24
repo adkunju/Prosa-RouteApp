@@ -1280,7 +1280,7 @@ export default function PlanViewScreen() {
                         {stop.stores.pipeline_status}
                       </span>
                     )}
-                    <ContactButtons phone={phones[stop.store_id]} storeId={stop.store_id} storeName={stop.stores?.name} />
+                    <ContactButtons phone={phones[stop.store_id]} storeId={stop.store_id} storeName={stop.stores?.name} status={stop.stores?.pipeline_status} />
                   </div>
                   <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0, effectiveStartMinutes)}</span>
                 </div>

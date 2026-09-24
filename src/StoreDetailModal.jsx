@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { syncMatrix } from './matrixUtils'
 import { useGeolocation, haversineKm } from './useGeolocation'
-import { X, Search, Loader2, Phone, MessageCircle, Trash2, Plus, Clock, MapPin, RefreshCw, Truck } from 'lucide-react'
+import { X, Search, Loader2, Phone, MessageCircle, Trash2, Plus, Clock, MapPin, RefreshCw, Truck, Star } from 'lucide-react'
+import { openWhatsApp, startCall as startContactCall } from './ContactButtons'
+import { contactLabel, AddContactForm } from './contactUtils'
 
 const PLACES_KEY = import.meta.env.VITE_GOOGLE_PLACES_KEY
 const ANGAMALY = { lat: 10.1963, lng: 76.5762 }
@@ -29,6 +31,7 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
     return obj
   })
   const [contacts, setContacts] = useState([])
+  const [addingContact, setAddingContact] = useState(false)
   const [newContactName, setNewContactName] = useState('')
   const [newContactPhone, setNewContactPhone] = useState('')
   const [savingDetail, setSavingDetail] = useState(false)
@@ -48,7 +51,8 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
   const [savingCall, setSavingCall] = useState(false)
 
   async function loadContacts() {
-    const { data } = await supabase.from('store_contacts').select('*').eq('store_id', store.id).order('created_at')
+    const { data } = await supabase.from('store_contacts').select('*').eq('store_id', store.id)
+      .order('is_primary', { ascending: false }).order('created_at')
     setContacts(data || [])
   }
   useEffect(() => { loadContacts() }, [])
@@ -136,7 +140,7 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
         const already = contacts.some(c => c.phone.replace(/\D/g, '') === place.internationalPhoneNumber.replace(/\D/g, ''))
         if (!already) {
           await supabase.from('store_contacts').insert({
-            store_id: store.id, name: 'Store Phone', phone: place.internationalPhoneNumber,
+            store_id: store.id, title: 'Store Phone', phone: place.internationalPhoneNumber,
           })
           await loadContacts()
         }
@@ -183,23 +187,27 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
     await supabase.from('store_contacts').insert({ store_id: store.id, name: newContactName.trim() || null, phone: newContactPhone.trim() })
     setNewContactName(''); setNewContactPhone('')
     await loadContacts()
+    window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
   }
 
   async function deleteContact(id) {
     await supabase.from('store_contacts').delete().eq('id', id)
     await loadContacts()
+    window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
   }
 
-  function openWhatsapp(phone) {
-    const clean = phone.replace(/[^\d+]/g, '')
-    window.open(`https://wa.me/${clean.replace('+', '')}`, '_blank')
+  // Make one contact the store's main contact (listed first everywhere); tap again to unset
+  async function togglePrimary(c) {
+    await supabase.from('store_contacts').update({ is_primary: false }).eq('store_id', store.id).eq('is_primary', true)
+    if (!c.is_primary) await supabase.from('store_contacts').update({ is_primary: true }).eq('id', c.id)
+    await loadContacts()
+    window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
   }
 
-  function startCall(contact) {
-    window.location.href = `tel:${contact.phone}`
-    setCallTarget(contact)
-    setCallNote('')
-  }
+  // Same message templates and after-call prompt as everywhere else
+  const contactCtx = { status: store.pipeline_status, storeName: store.name, storeId: store.id }
+  function openWhatsapp(c) { openWhatsApp(c, contactCtx) }
+  function startCall(c) { startContactCall(c, contactCtx) }
 
   async function confirmCallLog(didCall) {
     if (didCall) {
@@ -325,15 +333,22 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
             {contacts.map(c => (
               <div key={c.id} className="bg-[var(--bg-input)]/40 rounded-lg p-2.5 flex items-center justify-between gap-2">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[var(--text-primary)] text-sm truncate">{c.name || 'Contact'}</div>
+                  <div className="text-[var(--text-primary)] text-sm truncate flex items-center gap-1">
+                    <span className="truncate">{contactLabel(c)}</span>
+                    {c.is_primary && <span className="text-[10px] text-[var(--text-gold)] font-medium shrink-0">MAIN</span>}
+                  </div>
                   <div className="text-[var(--text-muted)] text-xs">{c.phone}</div>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <button onClick={() => openWhatsapp(c.phone)} className="text-[var(--accent)] hover:text-[var(--text-accent)] p-1.5 bg-[var(--bg-card)] rounded-lg">
+                  <button onClick={() => openWhatsapp(c)} className="text-[var(--accent)] hover:text-[var(--text-accent)] p-1.5 bg-[var(--bg-card)] rounded-lg">
                     <MessageCircle size={14} />
                   </button>
                   <button onClick={() => startCall(c)} className="text-[var(--text-accent)] hover:text-[var(--text-accent2)] p-1.5 bg-[var(--bg-card)] rounded-lg">
                     <Phone size={14} />
+                  </button>
+                  <button onClick={() => togglePrimary(c)} title={c.is_primary ? 'Main contact (tap to unset)' : 'Make main contact'}
+                    className={`p-1.5 ${c.is_primary ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted2)] hover:text-[var(--text-gold)]'}`}>
+                    <Star size={14} className={c.is_primary ? 'fill-current' : ''} />
                   </button>
                   <button onClick={() => deleteContact(c.id)} className="text-[var(--text-muted2)] hover:text-red-400 p-1.5">
                     <Trash2 size={13} />
@@ -342,15 +357,15 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
               </div>
             ))}
           </div>
-          <div className="flex gap-2">
-            <input type="text" placeholder="Name (optional)" value={newContactName} onChange={e => setNewContactName(e.target.value)}
-              className="flex-1 bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-[var(--accent)]" />
-            <input type="tel" placeholder="Phone" value={newContactPhone} onChange={e => setNewContactPhone(e.target.value)}
-              className="flex-1 bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-[var(--accent)]" />
-            <button onClick={addContact} className="bg-[var(--bg-hover)] hover:bg-[var(--bg-hover2)] text-[var(--text-primary)] rounded-lg px-3">
-              <Plus size={14} />
+          {addingContact ? (
+            <AddContactForm storeId={store.id} onCancel={() => setAddingContact(false)}
+              onAdded={async () => { setAddingContact(false); await loadContacts() }} />
+          ) : (
+            <button onClick={() => setAddingContact(true)}
+              className="w-full border border-dashed border-[var(--bg-input)] text-[var(--text-muted)] hover:text-[var(--accent)] rounded-lg py-2 text-sm flex items-center justify-center gap-1">
+              <Plus size={14} /> Add contact
             </button>
-          </div>
+          )}
         </div>
 
         <button onClick={saveAll} disabled={savingDetail}

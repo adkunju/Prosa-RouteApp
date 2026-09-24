@@ -142,7 +142,7 @@ export default function ForecastScreen() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1">
                   <span className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</span>
-                  <ContactButtons phone={phones[row.store_id]} storeId={row.store_id} storeName={row.store_name} />
+                  <ContactButtons phone={phones[row.store_id]} storeId={row.store_id} storeName={row.store_name} status={row.pipeline_status} />
                 </div>
                 <div className="text-[var(--text-muted)] text-xs mt-0.5">
                   {row.sku_name}

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
 import AuthGate from './AuthGate'
 import { syncMatrix } from './matrixUtils'
+import { loadWaTemplates, loadWaContext } from './waTemplates'
 import CallFollowupPrompt from './CallFollowupPrompt'
 import DashboardScreen from './DashboardScreen'
 import ForecastScreen from './ForecastScreen'
@@ -102,6 +103,15 @@ function Shell() {
     }
     window.addEventListener('prosa:goto', go)
     return () => window.removeEventListener('prosa:goto', go)
+  }, [])
+  useEffect(() => {
+    loadWaTemplates().catch(() => {})
+    // store facts for message placeholders; refresh after calls and deliveries
+    const refresh = () => loadWaContext().catch(() => {})
+    refresh()
+    window.addEventListener('prosa:call_logged', refresh)
+    window.addEventListener('prosa:stock_changed', refresh)
+    return () => { window.removeEventListener('prosa:call_logged', refresh); window.removeEventListener('prosa:stock_changed', refresh) }
   }, [])
   // Quietly fill travel times for any store that has none (no route-service call if nothing is missing)
   useEffect(() => {

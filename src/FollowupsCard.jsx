@@ -6,6 +6,7 @@ import { fuzzyMatch } from './fuzzy'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { X, PhoneCall, Plus, Search } from 'lucide-react'
 import { LogCallForm } from './CallFollowupPrompt'
+import { contactLabel } from './contactUtils'
 
 const dayLabel = ymd => {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -119,10 +120,12 @@ export function CallLogModal({ store, onClose, startAdding = false }) {
   const [logs, setLogs] = useState(null)
   const [adding, setAdding] = useState(startAdding)
   const [editing, setEditing] = useState(null) // log id being edited
+  const [status, setStatus] = useState(store.pipeline_status)
+  useEffect(() => { if (!status) supabase.from('stores').select('pipeline_status').eq('id', store.store_id).maybeSingle().then(({ data }) => setStatus(data?.pipeline_status)) }, [store.store_id])
   const phones = useStoreContacts()
   async function load() {
     const { data } = await supabase.from('call_logs')
-      .select('id, kind, note, follow_up_on, called_at')
+      .select('id, kind, note, follow_up_on, called_at, store_contacts(salutation, name, title)')
       .eq('store_id', store.store_id)
       .order('called_at', { ascending: false })
     setLogs(data || [])
@@ -142,7 +145,7 @@ export function CallLogModal({ store, onClose, startAdding = false }) {
             <div className="text-[var(--text-muted2)] text-xs">Call log</div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <ContactButtons phone={phones[store.store_id]} size={15} storeId={store.store_id} storeName={store.name} />
+            <ContactButtons phone={phones[store.store_id]} size={15} storeId={store.store_id} storeName={store.name} status={status} />
             <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] ml-1"><X size={20} /></button>
           </div>
         </div>
@@ -168,7 +171,7 @@ export function CallLogModal({ store, onClose, startAdding = false }) {
           ) : (
             <div key={l.id} className={`pl-3 border-l-2 ${i === 0 ? 'border-[var(--accent)]' : 'border-[var(--bg-input)]'}`}>
               <div className="text-[var(--text-muted)] text-xs flex items-center justify-between gap-2">
-                <span>{l.kind === 'reminder' ? '📌 Reminder set' : l.kind === 'visit' ? '🚚 Visit note' : '📞 Call'} · {whenLabel(l.called_at)}</span>
+                <span>{l.kind === 'reminder' ? '📌 Reminder set' : l.kind === 'visit' ? '🚚 Visit note' : '📞 Call'}{(l.kind || 'call') === 'call' && l.store_contacts?.name ? ` with ${contactLabel(l.store_contacts)}` : ''} · {whenLabel(l.called_at)}</span>
                 <button onClick={() => setEditing(l.id)} className="text-[var(--accent)] text-xs font-medium shrink-0">Edit</button>
               </div>
               {l.note && <div className="text-[var(--text-primary)] text-sm mt-0.5 whitespace-pre-wrap">{l.note}</div>}

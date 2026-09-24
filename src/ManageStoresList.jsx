@@ -106,7 +106,7 @@ export default function ManageStoresList() {
 
     if (newStore && place.internationalPhoneNumber) {
       await supabase.from('store_contacts').insert({
-        store_id: newStore.id, name: 'Store Phone', phone: place.internationalPhoneNumber,
+        store_id: newStore.id, title: 'Store Phone', phone: place.internationalPhoneNumber,
       })
     }
 

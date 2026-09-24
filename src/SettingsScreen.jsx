@@ -3,7 +3,8 @@ import SkusScreen from './SkusScreen'
 import ManageStoresList from './ManageStoresList'
 import MatrixPanel from './MatrixPanel'
 import { supabase } from './supabaseClient'
-import { Package, Route, Store, ChevronRight, LogOut, RefreshCw, Sun, Moon, ClipboardList, FlaskConical } from 'lucide-react'
+import { Package, Route, Store, ChevronRight, LogOut, RefreshCw, Sun, Moon, ClipboardList, FlaskConical, MessageCircle } from 'lucide-react'
+import WaTemplatesPanel from './WaTemplatesPanel'
 import BulkSyncPanel from './BulkSyncPanel'
 import LogScreen from './LogScreen'
 import ProductionScreen from './ProductionScreen'
@@ -79,6 +80,20 @@ export default function SettingsScreen({ theme, setTheme }) {
     )
   }
 
+  if (section === 'whatsapp') {
+    return (
+      <div className="flex-1 flex flex-col overflow-hidden relative">
+        <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center gap-2 shrink-0">
+          <button onClick={() => setSection(null)} className="text-[var(--text-accent)] text-sm">← Settings</button>
+          <span className="text-[var(--text-muted)] text-sm ml-2">WhatsApp messages</span>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 pb-28">
+          <WaTemplatesPanel />
+        </div>
+      </div>
+    )
+  }
+
   if (section === 'matrix') {
     return (
       <div className="flex-1 flex flex-col overflow-hidden relative">
@@ -119,6 +134,13 @@ export default function SettingsScreen({ theme, setTheme }) {
         className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 flex items-center justify-between hover:bg-[var(--bg-input)]/40 transition-colors">
         <span className="flex items-center gap-3 text-[var(--text-primary)] text-sm font-medium">
           <ClipboardList size={18} className="text-[var(--text-accent)]" /> Delivery &amp; Return Log
+        </span>
+        <ChevronRight size={16} className="text-[var(--text-muted2)]" />
+      </button>
+      <button onClick={() => setSection('whatsapp')}
+        className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 flex items-center justify-between hover:bg-[var(--bg-input)]/40 transition-colors">
+        <span className="flex items-center gap-3 text-[var(--text-primary)] text-sm font-medium">
+          <MessageCircle size={18} className="text-emerald-500" /> WhatsApp messages
         </span>
         <ChevronRight size={16} className="text-[var(--text-muted2)]" />
       </button>

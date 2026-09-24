@@ -35,8 +35,11 @@ export function useSettings() {
       saveTimer.current = setTimeout(async () => {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user || !pendingRef.current) return
+        // Only write the fields this hook owns, so other settings (e.g. WhatsApp
+        // messages saved elsewhere) are never overwritten with stale values
+        const own = Object.fromEntries(Object.keys(DEFAULTS).map(k => [k, pendingRef.current[k]]))
         await supabase.from('user_settings')
-          .upsert({ user_id: user.id, ...pendingRef.current, updated_at: new Date().toISOString() })
+          .upsert({ user_id: user.id, ...own, updated_at: new Date().toISOString() })
       }, 600)
       return next
     })

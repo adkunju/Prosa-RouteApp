@@ -48,7 +48,7 @@ export default function BulkSyncPanel({ onClose }) {
         const existing = contactsByStore[store.id] || []
         const already = existing.some(c => c.phone.replace(/\D/g, '') === place.internationalPhoneNumber.replace(/\D/g, ''))
         if (!already) {
-          await supabase.from('store_contacts').insert({ store_id: store.id, name: 'Store Phone', phone: place.internationalPhoneNumber })
+          await supabase.from('store_contacts').insert({ store_id: store.id, title: 'Store Phone', phone: place.internationalPhoneNumber })
         }
       }
       return { name: store.name, status: place.currentOpeningHours ? 'synced' : 'synced (no hours listed)' }

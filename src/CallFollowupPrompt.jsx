@@ -4,6 +4,7 @@ import { supabase } from './supabaseClient'
 import { localISO } from './dbUtils'
 import { Phone, X } from 'lucide-react'
 import { STATUSES } from './PipelineTag'
+import { contactLabel, AddContactForm } from './contactUtils'
 
 const KEY = 'prosa_pending_call'
 
@@ -17,7 +18,7 @@ const QUICK = [['Tomorrow', 1], ['3 days', 3], ['1 week', 7], ['2 weeks', 14]]
 
 // Remark + follow-up form. Used by the after-call prompt and by "Log a call" in the call log.
 // showDate: let the user set when the call happened (for calls made outside the app).
-export function LogCallForm({ storeId, calledAt, showDate = false, onDone, onCancel, cancelLabel = 'Skip' }) {
+export function LogCallForm({ storeId, calledAt, contactId, showDate = false, onDone, onCancel, cancelLabel = 'Skip' }) {
   const [note, setNote] = useState('')
   const [followUp, setFollowUp] = useState('')
   const [callDate, setCallDate] = useState(localISO())
@@ -25,6 +26,15 @@ export function LogCallForm({ storeId, calledAt, showDate = false, onDone, onCan
   const [error, setError] = useState('')
   const [origStatus, setOrigStatus] = useState(null)
   const [status, setStatus] = useState('')
+  const [contacts, setContacts] = useState([])
+  const [spokeWith, setSpokeWith] = useState(contactId || '')
+  const [addingContact, setAddingContact] = useState(false)
+  useEffect(() => { (async () => {
+    const { data } = await supabase.from('store_contacts').select('id, salutation, name, title, phone, is_primary')
+      .eq('store_id', storeId).order('is_primary', { ascending: false }).order('created_at')
+    setContacts(data || [])
+    if (!contactId && data?.length) setSpokeWith(data[0].id)
+  })() }, [storeId, contactId])
 
   // Current pipeline status, so the call can move the store along (prospect → warm, dropped, ...)
   useEffect(() => { (async () => {
@@ -50,6 +60,7 @@ export function LogCallForm({ storeId, calledAt, showDate = false, onDone, onCan
     }
     const { error: e } = await supabase.from('call_logs').insert({
       store_id: storeId,
+      store_contact_id: spokeWith || null,
       note: [statusChanged ? `Status: ${origStatus} → ${status}` : null, note.trim() || null].filter(Boolean).join('\n') || null,
       follow_up_on: followUp || null,
       called_at: when.toISOString(),
@@ -68,6 +79,25 @@ export function LogCallForm({ storeId, calledAt, showDate = false, onDone, onCan
           <input type="date" value={callDate} max={localISO()} onChange={e => setCallDate(e.target.value)}
             className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-3" />
         </>
+      )}
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-[var(--text-muted)] text-xs">Spoke with</label>
+        {!addingContact && (
+          <button type="button" onClick={() => setAddingContact(true)} className="text-[var(--accent)] text-xs font-medium">+ Add contact</button>
+        )}
+      </div>
+      {addingContact ? (
+        <div className="mb-3">
+          <AddContactForm storeId={storeId} onCancel={() => setAddingContact(false)}
+            onAdded={c => { setContacts(cs => [...cs, c]); setSpokeWith(c.id); setAddingContact(false) }} />
+        </div>
+      ) : contacts.length > 0 ? (
+        <select value={spokeWith} onChange={e => setSpokeWith(e.target.value)}
+          className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-3">
+          {contacts.map(c => <option key={c.id} value={c.id}>{contactLabel(c)}{c.is_primary ? ' ★' : ''} · {c.phone}</option>)}
+        </select>
+      ) : (
+        <p className="text-[var(--text-muted2)] text-xs mb-3">No contacts saved yet — add the person you spoke to.</p>
       )}
       <label className="text-[var(--text-muted)] text-xs mb-1 block">Remark</label>
       <textarea rows={3} autoFocus value={note} onChange={e => setNote(e.target.value)}
@@ -142,11 +172,11 @@ export default function CallFollowupPrompt() {
         <div className="flex items-start justify-between mb-3">
           <div>
             <div className="text-[var(--text-primary)] font-semibold flex items-center gap-2"><Phone size={15} className="text-[var(--accent)]" /> How did the call go?</div>
-            <div className="text-[var(--text-muted2)] text-xs mt-0.5">{call.name}</div>
+            <div className="text-[var(--text-muted2)] text-xs mt-0.5">{call.name}{call.contactName ? ` · ${call.contactName}` : ''}</div>
           </div>
           <button onClick={close} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
         </div>
-        <LogCallForm storeId={call.storeId} calledAt={call.at} onDone={close} onCancel={close} />
+        <LogCallForm storeId={call.storeId} calledAt={call.at} contactId={call.contactId} onDone={close} onCancel={close} />
       </div>
     </div>,
     document.body

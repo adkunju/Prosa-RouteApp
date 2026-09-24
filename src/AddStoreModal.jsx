@@ -108,7 +108,7 @@ export default function AddStoreModal({ onClose, onSaved }) {
 
     if (newStore && phone) {
       await supabase.from('store_contacts').insert({
-        store_id: newStore.id, name: 'Store Phone', phone,
+        store_id: newStore.id, title: 'Store Phone', phone,
       })
     }
     // Fill travel times for the new store BEFORE closing (the Dashboard reloads the page on save)

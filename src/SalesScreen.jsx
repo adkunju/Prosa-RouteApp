@@ -84,7 +84,7 @@ function StoreCard({ s, phones, onChanged, position, lastCall, onOpenLog }) {
             </div>
           </div>
           <span className="flex items-center gap-2 shrink-0">
-            <ContactButtons phone={phones[s.store_id]} variant="pill" storeId={s.store_id} storeName={s.name} />
+            <ContactButtons phone={phones[s.store_id]} variant="pill" storeId={s.store_id} storeName={s.name} status={s.pipeline_status} />
             <button onClick={e => { e.stopPropagation(); onOpenLog() }} title="Call log" aria-label="Call log"
               className="h-9 px-3 rounded-full bg-[var(--bg-input)] text-[var(--text-secondary)] hover:bg-[var(--accent)]/15 hover:text-[var(--accent)] flex items-center gap-1.5 text-xs font-medium transition-colors">
               <ClipboardList size={16} /> Log
