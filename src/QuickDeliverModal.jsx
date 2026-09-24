@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { fetchBatchUsage } from './stockUtils'
+import { fetchBatchUsage, notifyStockChanged } from './stockUtils'
 import { X, Search, Loader2 } from 'lucide-react'
 
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
@@ -28,6 +28,8 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
   const [showHistoryFor, setShowHistoryFor] = useState(null)
   const [saving, setSaving] = useState(false)
   const [remark, setRemark] = useState('')
+  const [returnSources, setReturnSources] = useState({}) // sku_id -> earlier deliveries a return can come from
+  const [saveError, setSaveError] = useState('')
 
   useEffect(() => { (async () => {
     const [{ data: st }, { data: sk }, { data: b }, { used }, { data: rdl }] = await Promise.all([
@@ -58,11 +60,21 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
     : recentStores
 
   function batchesFor(skuId) {
-    return batches.filter(b => b.sku_id === skuId && b.available > 0 && b.expires_on >= today())
+    return batches.filter(b => b.sku_id === skuId && b.available > 0 && b.expires_on > today())
   }
 
   function setLine(skuId, patch) {
     setLines(l => ({ ...l, [skuId]: { ...l[skuId], ...patch } }))
+  }
+  const retTotal = l => (l?.returns || []).reduce((n, r) => n + (Number(r.qty) || 0), 0)
+  function setReturnRow(skuId, idx, patch) {
+    setLines(ls => ({ ...ls, [skuId]: { ...ls[skuId], returns: (ls[skuId]?.returns || []).map((r, i) => i === idx ? { ...r, ...patch } : r) } }))
+  }
+  function addReturnRow(skuId) {
+    setLines(ls => ({ ...ls, [skuId]: { ...ls[skuId], returns: [...(ls[skuId]?.returns || []), { dl_id: '', qty: '' }] } }))
+  }
+  function removeReturnRow(skuId, idx) {
+    setLines(ls => ({ ...ls, [skuId]: { ...ls[skuId], returns: (ls[skuId]?.returns || []).filter((_, i) => i !== idx) } }))
   }
 
   async function pickStore(s) {
@@ -85,7 +97,7 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
     const init = {}
     skus.forEach(sk => {
       const price = lastSoldMap[sk.id] ?? storePriceMap[sk.id] ?? sk.unit_price ?? ''
-      init[sk.id] = { qty: '', batch_id: batchesFor(sk.id)[0]?.id || '', returned: '', produced_on: '', price, is_offer: false, store_balance: '' }
+      init[sk.id] = { qty: '', batch_id: batchesFor(sk.id)[0]?.id || '', returns: [{ dl_id: '', qty: '' }], price, is_offer: false, store_balance: '' }
     })
     setRemark('')
     setLines(init)
@@ -94,10 +106,10 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
     // Fetch delivery history for this store
     const [{ data: hist }, { data: rets }] = await Promise.all([
       supabase.from('delivery_lines')
-        .select('id, sku_id, qty_delivered, delivered_on, unit_price, is_offer')
+        .select('id, sku_id, qty_delivered, delivered_on, unit_price, is_offer, production_batches(produced_on)')
         .eq('store_id', s.id)
         .order('delivered_on', { ascending: false })
-        .limit(40),
+        .limit(80),
       supabase.from('returns')
         .select('delivery_line_id, qty_returned')
         .eq('store_id', s.id),
@@ -106,6 +118,18 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
     ;(rets || []).forEach(r => {
       if (r.delivery_line_id) retsByLine[r.delivery_line_id] = (retsByLine[r.delivery_line_id] || 0) + r.qty_returned
     })
+    // Earlier deliveries a return can come from (before today, something was delivered)
+    const sources = {}
+    ;(hist || []).forEach(l => {
+      if (l.qty_delivered <= 0 || l.delivered_on >= today()) return
+      if (!sources[l.sku_id]) sources[l.sku_id] = []
+      if (sources[l.sku_id].length < 12) sources[l.sku_id].push({
+        id: l.id, delivered_on: l.delivered_on, qty: l.qty_delivered,
+        produced_on: l.production_batches?.produced_on || null,
+        returned: retsByLine[l.id] || 0,
+      })
+    })
+    setReturnSources(sources)
     const grouped = {}
     ;(hist || []).forEach(l => {
       if (!grouped[l.sku_id]) grouped[l.sku_id] = []
@@ -121,44 +145,53 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
   }
 
   async function save() {
-    if (!store) return
-    setSaving(true)
+    if (!store || saving) return
+    setSaveError('')
     const dateStr = today()
-    for (const skuId of selectedSkuIds) {
-      const sk = skus.find(s => s.id === skuId)
-      if (!sk) continue
-      const l = lines[sk.id] || {}
-      const qty = Number(l.qty) || 0
-      const ret = Number(l.returned) || 0
-      if (qty <= 0 && ret <= 0) continue
-
-      let lineId = null
-      if (qty > 0) {
-        const { data } = await supabase.from('delivery_lines').insert({
-          store_id: store.id,
-          plan_stop_id: null,
-          sku_id: sk.id,
-          batch_id: l.batch_id || null,
-          qty_delivered: qty,
-          unit_price: l.price === '' ? null : Number(l.price),
-          is_offer: l.is_offer || false,
-          store_balance: l.store_balance !== '' && l.store_balance !== undefined ? Number(l.store_balance) : null,
-          delivered_on: dateStr,
-        }).select('id').single()
-        lineId = data?.id || null
+    const active = selectedSkuIds.filter(id => skus.some(s => s.id === id))
+    if (active.some(id => (lines[id]?.returns || []).some(r => Number(r.qty) > 0 && !r.dl_id))) {
+      setSaveError('Pick which batch each return came from'); return
+    }
+    setSaving(true)
+    // 1. all delivery lines in one request
+    const lineRows = active.filter(id => Number(lines[id]?.qty) > 0).map(id => {
+      const l = lines[id]
+      return {
+        store_id: store.id, plan_stop_id: null, sku_id: id,
+        batch_id: l.batch_id || null,
+        qty_delivered: Number(l.qty),
+        unit_price: l.price === '' || l.price == null ? null : Number(l.price),
+        is_offer: l.is_offer || false,
+        store_balance: l.store_balance !== '' && l.store_balance !== undefined ? Number(l.store_balance) : null,
+        delivered_on: dateStr,
       }
-      if (ret > 0) {
-        const { error: retErr } = await supabase.from('returns').insert({
-          delivery_line_id: lineId || null,
-          store_id: store.id,
-          sku_id: sk.id,
-          produced_on: l.produced_on || null,
-          qty_returned: ret,
-          returned_on: dateStr,
-          possible_stockout: false,
-          reason: 'Unplanned visit',
-        })
-        if (retErr) console.error('Return insert failed:', retErr.message)
+    })
+    let inserted = []
+    if (lineRows.length) {
+      const { data, error } = await supabase.from('delivery_lines').insert(lineRows).select('id')
+      if (error) { setSaveError('Could not save: ' + error.message + '. Nothing was recorded — try again.'); setSaving(false); return }
+      inserted = data || []
+    }
+    // 2. returns — each linked to the EARLIER delivery the stock came from, never today's
+    const retRows = active.flatMap(id => (lines[id]?.returns || []).filter(r => Number(r.qty) > 0).map(r => {
+      const src = r.dl_id !== 'none' ? (returnSources[id] || []).find(x => x.id === r.dl_id) : null
+      return {
+        delivery_line_id: src ? src.id : null,
+        store_id: store.id, sku_id: id,
+        produced_on: src?.produced_on || null,
+        produced_on_source: src?.produced_on ? 'user' : null,
+        qty_returned: Number(r.qty),
+        returned_on: dateStr,
+        possible_stockout: false,
+        reason: src ? null : 'No matching delivery on record',
+      }
+    }))
+    if (retRows.length) {
+      const { error } = await supabase.from('returns').insert(retRows)
+      if (error) {
+        if (inserted.length) await supabase.from('delivery_lines').delete().in('id', inserted.map(d => d.id))
+        setSaveError('Could not save returns: ' + error.message + '. Nothing was recorded — try again.')
+        setSaving(false); return
       }
     }
     // If visit-only (no delivery) save remark to call_logs via plan_stops is not applicable
@@ -174,12 +207,13 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
         })
       }
     }
+    notifyStockChanged()
     setSaving(false)
     onSaved?.()
     onClose?.()
   }
 
-  const anything = remark.trim().length > 0 || selectedSkuIds.some(id => Number(lines[id]?.qty) > 0 || Number(lines[id]?.returned) > 0)
+  const anything = remark.trim().length > 0 || selectedSkuIds.some(id => Number(lines[id]?.qty) > 0 || retTotal(lines[id]) > 0)
 
   return (
     <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
@@ -245,13 +279,11 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
                     className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
                 </div>
                 <div>
-                  <label className="text-[var(--text-muted)] text-xs mb-1 block">Returned</label>
-                  <input type="number" min="0" placeholder="0" value={l.returned ?? ''}
-                    onChange={e => setLine(sk.id, { returned: e.target.value })}
-                    className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                  <label className="text-[var(--text-muted)] text-xs mb-1 block">Returned (total)</label>
+                  <div className="w-full bg-[var(--bg-input)]/50 text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm">{retTotal(l)}</div>
                 </div>
               </div>
-              {(Number(l.qty) > 0 || Number(l.returned) > 0) && (
+              {(Number(l.qty) > 0 || retTotal(l) > 0) && (
                 <div className="mb-3">
                   <div className="flex items-center gap-2 mb-1">
                     <label className="text-[var(--text-muted)] text-xs">Price per pc (₹)</label>
@@ -265,8 +297,8 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
                     onChange={ev => setLine(sk.id, { price: ev.target.value })}
                     className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
                   <p className="text-[var(--text-muted2)] text-xs mt-1">
-                    Billed {Math.max(0, (Number(l.qty) || 0) - (Number(l.returned) || 0))} pcs
-                    {l.price !== '' && ` · ₹${(Math.max(0, (Number(l.qty) || 0) - (Number(l.returned) || 0)) * Number(l.price)).toFixed(2)}`}
+                    Billed {Math.max(0, (Number(l.qty) || 0) - retTotal(l))} pcs
+                    {l.price !== '' && ` · ₹${(Math.max(0, (Number(l.qty) || 0) - retTotal(l)) * Number(l.price)).toFixed(2)}`}
                     {l.is_offer && <span className="ml-1 text-[var(--text-gold)]">· offer price</span>}
                   </p>
                   {(() => {
@@ -294,14 +326,35 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
                   {avail.length === 0 && <p className="text-[var(--text-gold)] text-xs mt-1">No stock in hand for this product</p>}
                 </div>
               )}
-              {Number(l.returned) > 0 && (
-                <div>
-                  <label className="text-[var(--text-muted)] text-xs mb-1 block">Production date on returned pack</label>
-                  <input type="date" max={today()} value={l.produced_on || ''}
-                    onChange={e => setLine(sk.id, { produced_on: e.target.value })}
-                    className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
-                </div>
-              )}
+              <div className="mt-2 flex flex-col gap-2">
+                <label className="text-[var(--text-muted)] text-xs">Returns picked up · which batch?</label>
+                {(l.returns || []).map((r, idx) => {
+                  const src = (returnSources[sk.id] || []).find(x => x.id === r.dl_id)
+                  const over = src && Number(r.qty) > src.qty - src.returned
+                  return (
+                    <div key={idx} className="flex flex-col gap-1">
+                      <div className="flex gap-2 items-center">
+                        <select value={r.dl_id} onChange={e => setReturnRow(sk.id, idx, { dl_id: e.target.value })}
+                          className={`flex-1 min-w-0 bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-2 py-2 text-xs outline-none ${Number(r.qty) > 0 && !r.dl_id ? 'ring-1 ring-red-400' : ''}`}>
+                          <option value="">Select batch...</option>
+                          {(returnSources[sk.id] || []).map(x => (
+                            <option key={x.id} value={x.id}>Batch {x.produced_on || '?'} · sent {x.delivered_on.slice(5)} ({x.qty}{x.returned ? `, ${x.returned} back` : ''})</option>
+                          ))}
+                          <option value="none">Not on record</option>
+                        </select>
+                        <input type="number" min="0" placeholder="Qty" value={r.qty}
+                          onChange={e => setReturnRow(sk.id, idx, { qty: e.target.value })}
+                          className="w-16 shrink-0 text-center bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--text-amber)]" />
+                        {(l.returns || []).length > 1 && (
+                          <button onClick={() => removeReturnRow(sk.id, idx)} className="text-[var(--text-muted2)] hover:text-red-400 shrink-0 text-xs">✕</button>
+                        )}
+                      </div>
+                      {over && <p className="text-[var(--text-gold)] text-[11px]">More than was left from that delivery ({src.qty - src.returned}) — check the batch</p>}
+                    </div>
+                  )
+                })}
+                <button onClick={() => addReturnRow(sk.id)} className="self-start text-xs font-medium text-[var(--text-amber)]">+ Another batch</button>
+              </div>
               {hist.length > 0 && (
                 <div className="mt-3 border-t border-[var(--bg-input)]/30 pt-2">
                   <div className="flex items-center justify-between mb-1">
@@ -346,7 +399,7 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
       </div>
 
       {store && (
-        <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-[var(--bg-input)]/60 shrink-0 flex gap-2 bg-[var(--bg-root)]/80 backdrop-blur-xl">
+        <div className="relative p-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-[var(--bg-input)]/60 shrink-0 flex gap-2 bg-[var(--bg-root)]/80 backdrop-blur-xl">
           <button onClick={() => { setStore(null); setQuery('') }}
             className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-sm px-3">Change store</button>
           <div className="flex flex-col justify-center shrink-0 mr-1">
@@ -356,11 +409,12 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
                 const sk = skus.find(s => s.id === skuId) || {id: skuId}
                 // eslint-disable-next-line no-unused-vars
                 const l = lines[sk.id] || {}
-                const billable = Math.max(0, (Number(l.qty) || 0) - (Number(l.returned) || 0))
+                const billable = Math.max(0, (Number(l.qty) || 0) - retTotal(l))
                 return sum + billable * (Number(l.price) || 0)
               }, 0).toFixed(2)}
             </span>
           </div>
+          {saveError && <p className="absolute -top-6 left-4 right-4 text-red-400 text-xs">{saveError}</p>}
           <button onClick={save} disabled={saving || !anything}
             className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors">
             {saving ? <Loader2 size={16} className="animate-spin" /> : (

@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { daysUntilDate } from './dbUtils'
 import { Plus, X, FlaskConical, AlertTriangle, Pencil, Trash2, PackageMinus } from 'lucide-react'
 import { fetchBatchUsage, notifyStockChanged, reasonLabel } from './stockUtils'
 import StockAdjustModal from './StockAdjustModal'
 
+// Days until expires_on by calendar date. expires_on is the first day the batch can't be
+// sold (produced_on + shelf life), so 1 = today is the last selling day, 0 or less = expired.
 function daysLeft(expiresOn) {
-  const diff = Math.ceil((new Date(expiresOn) - new Date()) / (1000 * 60 * 60 * 24))
-  return diff
+  return daysUntilDate(expiresOn)
 }
 
 function ExpiryBadge({ days }) {
   if (days <= 0) return <span className="text-xs bg-red-900/60 text-red-300 px-2 py-0.5 rounded-full">Expired</span>
-  if (days === 1) return <span className="text-xs bg-[var(--bg-orange-surface)]/60 text-[var(--text-amber2)] px-2 py-0.5 rounded-full">Expires today</span>
+  if (days === 1) return <span className="text-xs bg-[var(--bg-orange-surface)]/60 text-[var(--text-amber2)] px-2 py-0.5 rounded-full">Last day</span>
   if (days <= 2) return <span className="text-xs bg-yellow-900/60 text-yellow-300 px-2 py-0.5 rounded-full">{days}d left</span>
   return <span className="text-xs bg-[var(--bg-input)] text-[var(--text-secondary)] px-2 py-0.5 rounded-full">{days}d left</span>
 }

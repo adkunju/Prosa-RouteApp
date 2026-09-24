@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { fetchAll, localISO } from './dbUtils'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import PipelineTag from './PipelineTag'
 import { useGeolocation, haversineKm } from './useGeolocation'
@@ -157,7 +158,7 @@ export default function SalesScreen() {
     return Number(b.revenue) - Number(a.revenue) // default: revenue
   })
 
-  const thisMonth = new Date().toISOString().slice(0, 7)
+  const thisMonth = localISO().slice(0, 7)
   const totalRevenue = data.reduce((n, s) => n + Number(s.revenue), 0)
   const monthRevenue = data.reduce((n, s) => n + Number(s.revenue_30d), 0)
   const totalWaste = data.reduce((n, s) => n + Number(s.waste_value), 0)
@@ -243,28 +244,35 @@ function monthOptions() {
 
 function SalesPopup({ onClose, stores }) {
   const [tab, setTab] = useState('monthly')
-  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [month, setMonth] = useState(localISO().slice(0, 7))
   const [monthly, setMonthly] = useState([])
   const [storeMonth, setStoreMonth] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { (async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from("delivery_lines")
-      .select("store_id, delivered_on, qty_delivered, unit_price, skus(name, unit_price)")
-      .not("qty_delivered", "is", null)
-    const lines = (data || []).map(l => ({
+    // Sold = delivered − returned (returns counted against the delivery they came from),
+    // same rule as the store totals on the Sales screen.
+    const [data, rets] = await Promise.all([
+      fetchAll(() => supabase.from("delivery_lines")
+        .select("id, store_id, delivered_on, qty_delivered, unit_price, skus(name, unit_price)")
+        .not("qty_delivered", "is", null).order("id")),
+      fetchAll(() => supabase.from("returns").select("delivery_line_id, qty_returned").not("delivery_line_id", "is", null).order("id")),
+    ])
+    const retByLine = {}
+    rets.forEach(r => { retByLine[r.delivery_line_id] = (retByLine[r.delivery_line_id] || 0) + (r.qty_returned || 0) })
+    const lines = data.map(l => ({
       ...l,
-      price: Number(l.unit_price || l.skus?.unit_price || 0),
+      sold: l.qty_delivered - (retByLine[l.id] || 0),
+      price: Number(l.unit_price ?? l.skus?.unit_price ?? 0), // ?? so a genuine ₹0 price isn't replaced
     }))
     const byMonth = {}
     lines.forEach(l => {
       const m = (l.delivered_on || "").slice(0, 7)
       if (!m) return
       if (!byMonth[m]) byMonth[m] = { month: m, qty: 0, revenue: 0 }
-      byMonth[m].qty += l.qty_delivered
-      byMonth[m].revenue += l.qty_delivered * l.price
+      byMonth[m].qty += l.sold
+      byMonth[m].revenue += l.sold * l.price
     })
     setMonthly(Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month)))
     const byStore = {}
@@ -272,8 +280,8 @@ function SalesPopup({ onClose, stores }) {
       const sid = l.store_id
       const name = stores.find(s => s.store_id === sid)?.name || "Unknown"
       if (!byStore[sid]) byStore[sid] = { name, qty: 0, revenue: 0 }
-      byStore[sid].qty += l.qty_delivered
-      byStore[sid].revenue += l.qty_delivered * l.price
+      byStore[sid].qty += l.sold
+      byStore[sid].revenue += l.sold * l.price
     })
     setStoreMonth(Object.values(byStore).sort((a, b) => b.revenue - a.revenue))
     setLoading(false)
@@ -326,19 +334,21 @@ function SalesPopup({ onClose, stores }) {
 
 function ExpiryPopup({ onClose, stores }) {
   const [tab, setTab] = useState("monthly")
-  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [month, setMonth] = useState(localISO().slice(0, 7))
   const [monthly, setMonthly] = useState([])
   const [storeMonth, setStoreMonth] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { (async () => {
     setLoading(true)
-    const { data } = await supabase
+    const data = await fetchAll(() => supabase
       .from("returns")
-      .select("store_id, returned_on, qty_returned, delivery_lines(unit_price, skus(unit_price, name))")
-    const lines = (data || []).map(r => ({
+      .select("store_id, returned_on, qty_returned, skus(unit_price), delivery_lines(unit_price, skus(unit_price, name))")
+      .order("id"))
+    const lines = data.map(r => ({
       ...r,
-      price: Number(r.delivery_lines?.unit_price || r.delivery_lines?.skus?.unit_price || 0),
+      // price of the delivery it came from; unlinked returns fall back to the product price
+      price: Number(r.delivery_lines?.unit_price ?? r.delivery_lines?.skus?.unit_price ?? r.skus?.unit_price ?? 0),
     }))
     const byMonth = {}
     lines.forEach(l => {

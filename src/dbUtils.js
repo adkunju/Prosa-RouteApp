@@ -1,0 +1,25 @@
+// Supabase returns at most 1000 rows per request. For queries over full history
+// (stock usage, monthly sales), page through with .range() until everything is read.
+// makeQuery must build a FRESH query each call, e.g. () => supabase.from('x').select('a').order('id')
+export async function fetchAll(makeQuery, page = 1000) {
+  const all = []
+  for (let from = 0; ; from += page) {
+    const { data, error } = await makeQuery().range(from, from + page - 1)
+    if (error) throw error
+    all.push(...(data || []))
+    if (!data || data.length < page) break
+  }
+  return all
+}
+
+// Local (IST) calendar date as YYYY-MM-DD — toISOString() gives the UTC date, which is
+// yesterday between midnight and 5:30am.
+export const localISO = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+// Whole days from today until a YYYY-MM-DD date (negative = past), by calendar date.
+export function daysUntilDate(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number)
+  const t = new Date(); const today = new Date(t.getFullYear(), t.getMonth(), t.getDate())
+  return Math.round((new Date(y, m - 1, d) - today) / 86400000)
+}

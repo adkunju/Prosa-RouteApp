@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient'
+import { fetchAll } from './dbUtils'
 
 export const ADJUST_REASONS = [
   { key: 'self_consumed', label: 'Self consumed' },
@@ -11,9 +12,9 @@ export const reasonLabel = k => ADJUST_REASONS.find(r => r.key === k)?.label || 
 // Single source of truth for how much of each batch has left the depot.
 // used[batch_id] = delivered + adjusted (self consumed, damaged, etc.)
 export async function fetchBatchUsage() {
-  const [{ data: dl }, { data: adj }] = await Promise.all([
-    supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null),
-    supabase.from('stock_adjustments').select('batch_id, qty'),
+  const [dl, adj] = await Promise.all([
+    fetchAll(() => supabase.from('delivery_lines').select('batch_id, qty_delivered').not('batch_id', 'is', null).order('id')),
+    fetchAll(() => supabase.from('stock_adjustments').select('batch_id, qty').order('id')),
   ])
   const delivered = {}, adjusted = {}, used = {}
   ;(dl || []).forEach(d => { delivered[d.batch_id] = (delivered[d.batch_id] || 0) + (d.qty_delivered || 0) })

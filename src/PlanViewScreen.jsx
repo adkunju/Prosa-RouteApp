@@ -793,8 +793,7 @@ export default function PlanViewScreen() {
       const skuBatches = batchesForSku(r.sku_id)
       initial[r.sku_id] = {
         qty_delivered: r.approved_qty ?? r.proposed_qty ?? 0,
-        qty_returned: '',
-        return_line_id: '',
+        returns: [{ dl_id: '', qty: '' }],
         batch_id: skuBatches[0]?.id || '',
         unit_price: '',
         is_offer: false,
@@ -883,13 +882,28 @@ export default function PlanViewScreen() {
     }
   }
 
+  // Earlier deliveries of this product to this store — the batches a return can come from
+  function returnSources(skuId) {
+    return (priorLines[skuId] || []).filter(p => p.delivered_on < selectedDate && p.qty_delivered > 0)
+  }
+  const returnTotal = line => (line?.returns || []).reduce((n, r) => n + (Number(r.qty) || 0), 0)
+  function setReturnRow(skuId, idx, patch) {
+    setCompleteForm(f => ({ ...f, [skuId]: { ...f[skuId], returns: (f[skuId]?.returns || []).map((r, i) => i === idx ? { ...r, ...patch } : r) } }))
+  }
+  function addReturnRow(skuId) {
+    setCompleteForm(f => ({ ...f, [skuId]: { ...f[skuId], returns: [...(f[skuId]?.returns || []), { dl_id: '', qty: '' }] } }))
+  }
+  function removeReturnRow(skuId, idx) {
+    setCompleteForm(f => ({ ...f, [skuId]: { ...f[skuId], returns: (f[skuId]?.returns || []).filter((_, i) => i !== idx) } }))
+  }
+
   function addExtraSku(skuId) {
     if (!skuId) return
     const sku = allSkus.find(s => s.id === skuId)
     if (!sku) return
     const skuBatches = batchesForSku(skuId)
     setExtraReqs(e => [...e, { sku_id: skuId, name: sku.name }])
-    setCompleteForm(f => ({ ...f, [skuId]: { qty_delivered: 0, qty_returned: '', return_line_id: '', batch_id: skuBatches[0]?.id || '' } }))
+    setCompleteForm(f => ({ ...f, [skuId]: { qty_delivered: 0, returns: [{ dl_id: '', qty: '' }], batch_id: skuBatches[0]?.id || '' } }))
     setAddSkuOpen(false)
   }
 
@@ -905,6 +919,7 @@ export default function PlanViewScreen() {
       const line = completeForm[r.sku_id]
       if (!line) return false
       if (Number(line.qty_delivered) > 0 && !line.batch_id) return false
+      if ((line.returns || []).some(r => Number(r.qty) > 0 && !r.dl_id)) return false
       return true
     })
   }
@@ -955,19 +970,22 @@ export default function PlanViewScreen() {
     if (lErr) return fail('Could not save delivery: ' + lErr.message + '. Nothing was recorded — try again.')
 
     // Returns belong to the EARLIER delivery that carried the stock, never to the new line.
-    const returnRows = skuIds.filter(id => Number(completeForm[id].qty_returned) > 0).map(skuId => {
-      const line = completeForm[skuId]
-      return {
-        delivery_line_id: line.return_line_id || null,
-        store_id: stop.store_id,
-        sku_id: skuId,
-        produced_on: line.return_date_text || null,
-        qty_returned: Number(line.qty_returned),
-        returned_on: dateStr,
-        possible_stockout: false,
-        reason: line.return_line_id ? null : 'No matching delivery on record',
-      }
-    })
+    const returnRows = skuIds.flatMap(skuId => (completeForm[skuId].returns || [])
+      .filter(r => Number(r.qty) > 0)
+      .map(r => {
+        const src = r.dl_id && r.dl_id !== 'none' ? (priorLines[skuId] || []).find(p => p.id === r.dl_id) : null
+        return {
+          delivery_line_id: src ? src.id : null,
+          store_id: stop.store_id,
+          sku_id: skuId,
+          produced_on: src?.produced_on || null,
+          produced_on_source: src?.produced_on ? 'user' : null,
+          qty_returned: Number(r.qty),
+          returned_on: dateStr,
+          possible_stockout: false,
+          reason: src ? null : 'No matching delivery on record',
+        }
+      }))
     if (returnRows.length) {
       const { error: rErr } = await supabase.from('returns').insert(returnRows)
       if (rErr) {
@@ -1452,7 +1470,6 @@ export default function PlanViewScreen() {
               const needsBatch = Number(line.qty_delivered) > 0 && !line.batch_id
               const prior = priorLines[row.sku_id] || []
               const recentHistory = prior.slice(0, 5)
-              const needsReturnLine = Number(line.qty_returned) > 0 && !line.return_line_id
               const req = { sku_id: row.sku_id }
               return (
                 <div key={row.key} className="bg-[var(--bg-card)]/80 backdrop-blur-xl border border-[var(--bg-input)]/40 rounded-xl p-4">
@@ -1487,11 +1504,8 @@ export default function PlanViewScreen() {
                         className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
                     </div>
                     <div>
-                      <label className="text-[var(--text-muted)] text-xs mb-1 block">Returned</label>
-                      <input type="number" placeholder="0"
-                        value={line.qty_returned ?? ''}
-                        onChange={e => setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], qty_returned: e.target.value } }))}
-                        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                      <label className="text-[var(--text-muted)] text-xs mb-1 block">Returned (total)</label>
+                      <div className="w-full bg-[var(--bg-input)]/50 text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm">{returnTotal(line)}</div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 mb-3">
@@ -1512,7 +1526,7 @@ export default function PlanViewScreen() {
                   </div>
                   {line.unit_price !== '' && Number(line.unit_price) > 0 && Number(line.qty_delivered) > 0 && (
                     <div className="text-[var(--text-muted2)] text-xs mb-2">
-                      Billed: ₹{((Number(line.qty_delivered) - Number(line.qty_returned || 0)) * Number(line.unit_price)).toFixed(2)}
+                      Billed: ₹{((Number(line.qty_delivered) - returnTotal(line)) * Number(line.unit_price)).toFixed(2)}
                       {line.is_offer && <span className="ml-1 text-[var(--text-gold)]">· offer price</span>}
                     </div>
                   )}
@@ -1544,33 +1558,38 @@ export default function PlanViewScreen() {
                       ))}
                     </div>
                   )}
-                  {Number(line.qty_returned) > 0 && (() => {
-                    const res = resolveReturnLine(req.sku_id, line.return_date_text)
-                    const pretty = line.return_date_text
-                      ? new Date(line.return_date_text + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
-                      : null
-                    return (
-                      <div className="mt-3">
-                        <label className="text-[var(--text-muted)] text-xs mb-1 block">Production date on the returned pack</label>
-                        <input type="date" value={line.return_date_text || ''}
-                          max={selectedDate}
-                          onChange={ev => {
-                            const v = ev.target.value
-                            const r = resolveReturnLine(req.sku_id, v)
-                            setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], return_date_text: v, return_line_id: r.id } }))
-                          }}
-                          className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
-                        {pretty && <p className="text-[var(--text-secondary)] text-xs mt-1">{pretty}</p>}
-                        {prior[0] && res.status !== 'ok' && (
-                          <p className="text-[var(--text-muted2)] text-xs mt-1">
-                            Last delivery here: {prior[0].delivered_on} · {prior[0].qty_delivered} pcs
-                          </p>
-                        )}
-                        {res.status === 'nomatch' && <p className="text-[var(--text-gold)] text-xs mt-1">No delivery on record for that date — saved as an unlinked return against this store</p>}
-                        {res.status === 'ok' && <p className="text-[var(--accent)] text-xs mt-1">{res.note}</p>}
-                      </div>
-                    )
-                  })()}
+                  <div className="mt-3 border-t border-[var(--bg-input)]/30 pt-3 flex flex-col gap-2">
+                    <label className="text-[var(--text-muted)] text-xs">Returns picked up · which batch?</label>
+                    {(line.returns || []).map((r, idx) => {
+                      const src = returnSources(req.sku_id).find(p => p.id === r.dl_id)
+                      const over = src && Number(r.qty) > src.qty_delivered - src.already_returned
+                      return (
+                        <div key={idx} className="flex flex-col gap-1">
+                          <div className="flex gap-2 items-center">
+                            <select value={r.dl_id} onChange={e => setReturnRow(req.sku_id, idx, { dl_id: e.target.value })}
+                              className={`flex-1 min-w-0 bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-2 py-2 text-xs outline-none ${Number(r.qty) > 0 && !r.dl_id ? 'ring-1 ring-red-400' : ''}`}>
+                              <option value="">Select batch...</option>
+                              {returnSources(req.sku_id).map(p => (
+                                <option key={p.id} value={p.id}>
+                                  Batch {p.produced_on || '?'} · sent {p.delivered_on.slice(5)} ({p.qty_delivered}{p.already_returned ? `, ${p.already_returned} back` : ''})
+                                </option>
+                              ))}
+                              <option value="none">Not on record</option>
+                            </select>
+                            <input type="number" min="0" placeholder="Qty" value={r.qty}
+                              onChange={e => setReturnRow(req.sku_id, idx, { qty: e.target.value })}
+                              className="w-16 shrink-0 text-center bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--text-amber)]" />
+                            {(line.returns || []).length > 1 && (
+                              <button onClick={() => removeReturnRow(req.sku_id, idx)} className="text-[var(--text-muted2)] hover:text-red-400 shrink-0"><X size={14} /></button>
+                            )}
+                          </div>
+                          {over && <p className="text-[var(--text-gold)] text-[11px]">More than was left from that delivery ({src.qty_delivered - src.already_returned}) — check the batch</p>}
+                        </div>
+                      )
+                    })}
+                    <button onClick={() => addReturnRow(req.sku_id)}
+                      className="self-start text-xs font-medium text-[var(--text-amber)]">+ Another batch</button>
+                  </div>
                 </div>
               )
             })}

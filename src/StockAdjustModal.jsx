@@ -20,7 +20,7 @@ export default function StockAdjustModal({ batch, onClose, onSaved }) {
   useEffect(() => { (async () => {
     const [{ data: b }, { used }] = await Promise.all([
       supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, is_spare, skus(name)')
-        .gte('expires_on', localDate()).order('produced_on'),
+        .gt('expires_on', localDate()).order('produced_on'),
       fetchBatchUsage(),
     ])
     const list = (b || []).map(x => ({ ...x, available: x.qty - (used[x.id] || 0) })).filter(x => x.available > 0 || x.id === batch?.id)

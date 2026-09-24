@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { fetchAll, localISO, daysUntilDate } from './dbUtils'
 import { fetchBatchUsage } from './stockUtils'
 import StockAdjustModal from './StockAdjustModal'
 import StoreMap from './StoreMap'
@@ -8,7 +9,7 @@ import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
 import { ArrowUp, ArrowDown, Minus, X, Clock, Navigation } from 'lucide-react'
 
-function isoDate(d) { return d.toISOString().slice(0, 10) }
+function isoDate(d) { return localISO(d) } // local date — toISOString() would give the UTC day
 function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r }
 function monthStart(d) { return new Date(d.getFullYear(), d.getMonth(), 1) }
 function prevMonthStart(d) { return new Date(d.getFullYear(), d.getMonth() - 1, 1) }
@@ -72,9 +73,9 @@ export default function DashboardScreen() {
     const pmCutoff = isoDate(sameDayLastMonth(now))
     const today = isoDate(now)
 
-    const [{ data: dls }, { data: rets }, { data: allStores }, { data: depotRow }] = await Promise.all([
-      supabase.from('delivery_lines').select('qty_delivered, delivered_on, plan_stop_id, plan_stops(store_id)'),
-      supabase.from('returns').select('qty_returned, returned_on'),
+    const [dls, rets, { data: allStores }, { data: depotRow }] = await Promise.all([
+      fetchAll(() => supabase.from('delivery_lines').select('qty_delivered, delivered_on, store_id').gte('delivered_on', pmStart).order('id')),
+      fetchAll(() => supabase.from('returns').select('qty_returned, returned_on').gte('returned_on', pmStart).order('id')),
       supabase.from('stores').select('id, name, lat, lng, is_depot, is_active, service_minutes, opening_hours').eq('is_active', true),
       supabase.from('stores').select('id, lat, lng').eq('is_depot', true).maybeSingle(),
     ])
@@ -85,7 +86,7 @@ export default function DashboardScreen() {
     const sumDelivered = (from, to) => (dls || []).filter(d => d.delivered_on >= from && d.delivered_on <= to).reduce((a, d) => a + d.qty_delivered, 0)
     const sumReturned = (from, to) => (rets || []).filter(r => r.returned_on >= from && r.returned_on <= to).reduce((a, r) => a + r.qty_returned, 0)
     const netSold = (from, to) => sumDelivered(from, to) - sumReturned(from, to)
-    const activeStores = (from, to) => new Set((dls || []).filter(d => d.delivered_on >= from && d.delivered_on <= to).map(d => d.plan_stops?.store_id)).size
+    const activeStores = (from, to) => new Set((dls || []).filter(d => d.delivered_on >= from && d.delivered_on <= to).map(d => d.store_id).filter(Boolean)).size
 
     setStats({
       monthToDate: netSold(mStart, today),
@@ -107,18 +108,18 @@ export default function DashboardScreen() {
     const today = isoDate(now)
 
     const { data: dlsThis } = await supabase
-      .from('delivery_lines').select('id, qty_delivered, delivered_on, plan_stops!inner(store_id)')
-      .eq('plan_stops.store_id', store.id).gte('delivered_on', mStart).lte('delivered_on', today)
+      .from('delivery_lines').select('id, qty_delivered, delivered_on')
+      .eq('store_id', store.id).gte('delivered_on', mStart).lte('delivered_on', today)
     const { data: retsThis } = await supabase
-      .from('returns').select('qty_returned, returned_on, delivery_line_id, delivery_lines!inner(plan_stop_id, plan_stops!inner(store_id))')
-      .eq('delivery_lines.plan_stops.store_id', store.id).gte('returned_on', mStart).lte('returned_on', today)
+      .from('returns').select('qty_returned, returned_on, delivery_line_id')
+      .eq('store_id', store.id).gte('returned_on', mStart).lte('returned_on', today)
 
     const { data: dlsLast } = await supabase
-      .from('delivery_lines').select('id, qty_delivered, delivered_on, plan_stops!inner(store_id)')
-      .eq('plan_stops.store_id', store.id).gte('delivered_on', pmStart).lte('delivered_on', pmCutoff)
+      .from('delivery_lines').select('id, qty_delivered, delivered_on')
+      .eq('store_id', store.id).gte('delivered_on', pmStart).lte('delivered_on', pmCutoff)
     const { data: retsLast } = await supabase
-      .from('returns').select('qty_returned, returned_on, delivery_line_id, delivery_lines!inner(plan_stop_id, plan_stops!inner(store_id))')
-      .eq('delivery_lines.plan_stops.store_id', store.id).gte('returned_on', pmStart).lte('returned_on', pmCutoff)
+      .from('returns').select('qty_returned, returned_on, delivery_line_id')
+      .eq('store_id', store.id).gte('returned_on', pmStart).lte('returned_on', pmCutoff)
 
     // Per-visit aggregation: one point per delivery date, returns attributed
     // back to the delivery they came from (not the day they were collected).
@@ -172,10 +173,10 @@ export default function DashboardScreen() {
       supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, is_spare, skus(name)').order('expires_on'),
       fetchBatchUsage(),
     ])
-    const today = new Date().toISOString().slice(0, 10)
+    const today = localISO()
     const allBatches = (b || [])
       .map(x => ({ ...x, available: x.qty - (used[x.id] || 0) }))
-      .filter(x => x.available > 0 && x.expires_on >= today)
+      .filter(x => x.available > 0 && x.expires_on > today) // expires_on is the first day it can't be sold
     setStock(allBatches)
   })() }, [stockTick])
 
@@ -260,7 +261,7 @@ export default function DashboardScreen() {
             ))}
             <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40">
               {stock.map(b => {
-                const days = Math.ceil((new Date(b.expires_on) - new Date()) / 86400000)
+                const days = daysUntilDate(b.expires_on)
                 return (
                   <div key={b.id} className="flex justify-between text-xs py-0.5">
                     <span className="text-[var(--text-muted2)]">
