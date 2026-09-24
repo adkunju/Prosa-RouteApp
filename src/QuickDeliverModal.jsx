@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import DeliveryConfirmed from './DeliveryConfirmed'
 import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
 import { fetchBatchUsage, notifyStockChanged } from './stockUtils'
 import { X, Search, Loader2 } from 'lucide-react'
@@ -32,6 +33,7 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
   const [returnSources, setReturnSources] = useState({}) // sku_id -> earlier deliveries a return can come from
   const [saveError, setSaveError] = useState('')
   const [reminder, setReminder] = useState(EMPTY_REMINDER)
+  const [deliveryDone, setDeliveryDone] = useState(null)
 
   useEffect(() => { (async () => {
     const [{ data: st }, { data: sk }, { data: b }, { used }, { data: rdl }] = await Promise.all([
@@ -207,8 +209,19 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
     if (remErr) alert('Delivery saved, but the call reminder did not: ' + remErr)
     notifyStockChanged()
     setSaving(false)
+    const items = active.map(id => ({
+      name: skus.find(s => s.id === id)?.name || 'Item',
+      delivered: Number(lines[id]?.qty) || 0,
+      returned: retTotal(lines[id]),
+      price: Number(lines[id]?.price) || 0,
+    })).filter(i => i.delivered > 0 || i.returned > 0)
+    if (items.length) { setDeliveryDone({ storeId: store.id, storeName: store.name, date: dateStr, items }); return }
     onSaved?.()
     onClose?.()
+  }
+
+  if (deliveryDone) {
+    return <DeliveryConfirmed {...deliveryDone} onClose={() => { onSaved?.(); onClose?.() }} />
   }
 
   const anything = remark.trim().length > 0 || (reminder.open && !!reminder.date) || selectedSkuIds.some(id => Number(lines[id]?.qty) > 0 || retTotal(lines[id]) > 0)

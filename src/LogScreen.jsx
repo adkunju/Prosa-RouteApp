@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import DeliveryConfirmed from './DeliveryConfirmed'
 import { Plus, X, CheckCircle, Trash2, ChevronDown, Save, PackageMinus } from 'lucide-react'
 import { notifyStockChanged, reasonLabel } from './stockUtils'
 import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
@@ -32,6 +33,7 @@ export default function LogScreen() {
   const [editError, setEditError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [reminder, setReminder] = useState(EMPTY_REMINDER)
+  const [deliveryDone, setDeliveryDone] = useState(null)
   const [showAdjust, setShowAdjust] = useState(false)
 
   async function load() {
@@ -248,8 +250,16 @@ export default function LogScreen() {
     }
     const remErr = await saveReminder(store_id, reminder)
     if (remErr) { setSaveError('Visit saved, but the call reminder did not: ' + remErr); await load(); setSaving(false); return }
-    await load(); setSaving(false); setSaved(true)
-    setTimeout(() => { setSaved(false); resetForm() }, 1200)
+    await load(); setSaving(false)
+    // Delivery confirmed popup with 'Send on WhatsApp'
+    const byName = {}
+    lines.forEach(l => {
+      const name = skus.find(s => s.id === l.sku_id)?.name || 'Item'
+      if (!byName[name]) byName[name] = { name, delivered: 0, returned: 0, price: 0 }
+      byName[name][l.type === 'sale' ? 'delivered' : 'returned'] += Number(l.qty) || 0
+    })
+    setDeliveryDone({ storeId: store_id, storeName: stores.find(s => s.id === store_id)?.name || 'Store', date, items: Object.values(byName) })
+    resetForm()
   }
 
   const visitKey = (storeId, skuId, d) => `${storeId}|${skuId}|${d}`
@@ -289,6 +299,7 @@ export default function LogScreen() {
         </button>
         </div>
       </div>
+      {deliveryDone && <DeliveryConfirmed {...deliveryDone} onClose={() => setDeliveryDone(null)} />}
       {showAdjust && <StockAdjustModal onClose={() => setShowAdjust(false)} onSaved={load} />}
 
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">

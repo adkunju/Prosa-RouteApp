@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from './supabaseClient'
+import DeliveryConfirmed from './DeliveryConfirmed'
 import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
 import { fetchMatrix } from './matrixUtils'
 import { notifyStockChanged } from './stockUtils'
@@ -467,6 +468,7 @@ export default function PlanViewScreen() {
   const [completing, setCompleting] = useState(false)
   const [completeError, setCompleteError] = useState('')
   const [reminder, setReminder] = useState(EMPTY_REMINDER)
+  const [deliveryDone, setDeliveryDone] = useState(null) // shows the 'Delivery confirmed' popup
   const [toast, setToast] = useState('')
   const [batches, setBatches] = useState([])
   const [useLiveOrigin, setUseLiveOrigin] = useState(false)
@@ -999,6 +1001,11 @@ export default function PlanViewScreen() {
     }
     const remErr = await saveReminder(stop.store_id, reminder)
     if (remErr) setToast('Delivery saved, but the call reminder did not: ' + remErr)
+    const skuName = id => stop.requirements.find(r => r.sku_id === id)?.skus?.name || extraReqs.find(e => e.sku_id === id)?.name || allSkus.find(x => x.id === id)?.name || 'Item'
+    setDeliveryDone({
+      storeId: stop.store_id, storeName: stop.stores?.name || stop.name || 'Store', date: dateStr,
+      items: skuIds.map(id => ({ name: skuName(id), delivered: Number(completeForm[id].qty_delivered) || 0, returned: returnTotal(completeForm[id]), price: Number(completeForm[id].unit_price) || 0 })),
+    })
     setCompletedStopIds(s => new Set([...s, stop.id]))
     setCompleting(false)
     setActiveCompleteStop(null)
@@ -1113,6 +1120,7 @@ export default function PlanViewScreen() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
+      {deliveryDone && <DeliveryConfirmed {...deliveryDone} onClose={() => setDeliveryDone(null)} />}
       {toast && (
         <div onClick={() => setToast('')} className="fixed top-4 left-4 right-4 z-[70] bg-red-900/90 text-red-100 text-sm rounded-xl px-4 py-3 shadow-xl">{toast}</div>
       )}

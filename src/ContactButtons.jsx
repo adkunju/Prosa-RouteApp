@@ -14,7 +14,7 @@ export function useStoreContacts() {
   const [map, setMap] = useState({})
   useEffect(() => {
     const load = async () => {
-      const { data } = await supabase.from('store_contacts').select('id, store_id, salutation, name, title, phone, is_primary, created_at')
+      const { data } = await supabase.from('store_contacts').select('id, store_id, salutation, name, title, phone, is_primary, is_delivery, created_at')
         .order('is_primary', { ascending: false }).order('created_at')
       const m = {}
       ;(data || []).forEach(c => { (m[c.store_id] = m[c.store_id] || []).push(c) })
@@ -81,6 +81,7 @@ export default function ContactButtons({ phone, size = 13, storeId, storeName, v
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm text-[var(--text-primary)] truncate">
                       {contactLabel(c)} {c.is_primary && <Star size={11} className="inline text-[var(--text-gold)] fill-current -mt-0.5" />}
+                      {c.is_delivery && <span className="ml-1 text-[9px] font-bold bg-emerald-600 text-white rounded px-1">D</span>}
                     </span>
                     <span className="block text-xs text-[var(--text-muted2)]">{c.phone}</span>
                   </span>

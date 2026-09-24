@@ -196,6 +196,14 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
     window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
   }
 
+  // D = the contact who gets the WhatsApp delivery message; one per store, tap again to unset
+  async function toggleDelivery(c) {
+    await supabase.from('store_contacts').update({ is_delivery: false }).eq('store_id', store.id).eq('is_delivery', true)
+    if (!c.is_delivery) await supabase.from('store_contacts').update({ is_delivery: true }).eq('id', c.id)
+    await loadContacts()
+    window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
+  }
+
   // Make one contact the store's main contact (listed first everywhere); tap again to unset
   async function togglePrimary(c) {
     await supabase.from('store_contacts').update({ is_primary: false }).eq('store_id', store.id).eq('is_primary', true)
@@ -336,6 +344,7 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
                   <div className="text-[var(--text-primary)] text-sm truncate flex items-center gap-1">
                     <span className="truncate">{contactLabel(c)}</span>
                     {c.is_primary && <span className="text-[10px] text-[var(--text-gold)] font-medium shrink-0">MAIN</span>}
+                    {c.is_delivery && <span className="text-[10px] text-emerald-500 font-medium shrink-0">DELIVERY MSG</span>}
                   </div>
                   <div className="text-[var(--text-muted)] text-xs">{c.phone}</div>
                 </div>
@@ -345,6 +354,10 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
                   </button>
                   <button onClick={() => startCall(c)} className="text-[var(--text-accent)] hover:text-[var(--text-accent2)] p-1.5 bg-[var(--bg-card)] rounded-lg">
                     <Phone size={14} />
+                  </button>
+                  <button onClick={() => toggleDelivery(c)} title={c.is_delivery ? 'Gets delivery messages (tap to unset)' : 'Send delivery messages to this contact'}
+                    className={`w-6 h-6 rounded-md text-[11px] font-bold flex items-center justify-center ${c.is_delivery ? 'bg-emerald-600 text-white' : 'text-[var(--text-muted2)] border border-[var(--bg-hover)] hover:text-emerald-500'}`}>
+                    D
                   </button>
                   <button onClick={() => togglePrimary(c)} title={c.is_primary ? 'Main contact (tap to unset)' : 'Make main contact'}
                     className={`p-1.5 ${c.is_primary ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted2)] hover:text-[var(--text-gold)]'}`}>

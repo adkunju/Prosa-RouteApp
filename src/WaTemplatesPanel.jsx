@@ -7,6 +7,7 @@ const FIELDS = [
   ['wa_msg_prospect', 'Prospects', "New stores you haven't worked with yet", 'wa_link_prospect'],
   ['wa_msg_followup', 'Warm, cold, dormant & dropped', "Stores you've already been in touch with", 'wa_link_followup'],
   ['wa_msg_store', 'Onboarded stores', 'Stores you supply', 'wa_link_store'],
+  ['wa_msg_delivery', 'Delivery message', 'Sent from the "Delivery confirmed" popup to the store\'s D contact', 'wa_link_delivery'],
 ]
 const SAMPLE = Object.fromEntries(PLACEHOLDERS.map(([p, , ex]) => [p, ex]))
 const preview = t => (t || '').replace(/\{\w+\}/g, m => SAMPLE[m] ?? m)
@@ -61,7 +62,8 @@ export default function WaTemplatesPanel() {
           <>
             <p className="text-[var(--text-muted2)] text-[11px] mt-1 mb-2">
               Each one is replaced with that store's details when you tap WhatsApp. If a store has no data for one
-              (e.g. a prospect with no deliveries), it's left blank — so use the delivery and call ones for warm/cold and onboarded stores.
+              (e.g. a prospect with no deliveries), it's left blank. If every placeholder on a line is empty, that whole line
+              is left out — handy for "Returns collected: {'{returned_summary}'}" when nothing came back.
             </p>
             <div className="flex flex-col">
               {PLACEHOLDERS.map(([p, desc, ex]) => (
@@ -87,7 +89,7 @@ export default function WaTemplatesPanel() {
           <div className="text-[var(--text-muted2)] text-[11px] mb-2">{hint}</div>
           <div className="text-[var(--text-muted2)] text-[11px] mb-1">Tap to insert:</div>
           <div className="flex flex-wrap gap-1 mb-2">
-            {PLACEHOLDERS.map(([p]) => (
+            {PLACEHOLDERS.filter(([, desc]) => key === 'wa_msg_delivery' || !desc.startsWith('Delivery message only')).map(([p]) => (
               <button key={p} type="button" onClick={() => insert(key, p)}
                 className="px-2 py-1 rounded-md bg-[var(--bg-input)] text-[var(--text-secondary)] hover:text-[var(--accent)] font-mono text-[10px]">
                 {p.slice(1, -1)}

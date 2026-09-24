@@ -12,6 +12,9 @@ export const WA_DEFAULTS = {
   wa_link_prospect: '',
   wa_link_followup: '',
   wa_link_store: '',
+  // Sent from the "Delivery confirmed" popup to the store's D contact
+  wa_msg_delivery: 'Hello {contact}, delivery for {store} on {delivery_date}:\n{delivered_summary}\nReturns collected: {returned_summary}\nThank you! – Prosa',
+  wa_link_delivery: '',
 }
 const KEYS = Object.keys(WA_DEFAULTS)
 
@@ -48,6 +51,13 @@ export const PLACEHOLDERS = [
   ['{last_qty}', 'Packs delivered on the last visit', '12'],
   ['{last_call}', 'Remark from your most recent logged call', 'Manager asked for samples'],
   ['{followup_date}', "The store's next open follow-up date", '28 Sep'],
+  // Delivery message only — filled from the delivery just recorded
+  ['{delivery_date}', 'Delivery message only: date of this delivery', '24 Sep'],
+  ['{delivered_summary}', 'Delivery message only: items delivered', 'Idli/Dosa Batter × 12, Chappathi × 6'],
+  ['{delivered_qty}', 'Delivery message only: total packs delivered', '18'],
+  ['{returned_summary}', 'Delivery message only: returns collected (line is dropped if there were none)', 'Idli/Dosa Batter × 2'],
+  ['{returned_qty}', 'Delivery message only: total packs returned', '2'],
+  ['{bill_amount}', 'Delivery message only: (delivered − returned) × price', '₹1,120'],
 ]
 
 const fmtDay = (d, withWeekday) => d.toLocaleDateString('en-GB', withWeekday ? { weekday: 'long', day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short' })
@@ -88,7 +98,7 @@ export async function loadWaContext() {
   return ctx
 }
 
-function fillPlaceholders(text, storeName, storeId, contactName, contactTitle) {
+function fillPlaceholders(text, storeName, storeId, contactName, contactTitle, delivery) {
   const now = new Date()
   const h = now.getHours()
   const tmr = new Date(); tmr.setDate(tmr.getDate() + 1)
@@ -106,10 +116,42 @@ function fillPlaceholders(text, storeName, storeId, contactName, contactTitle) {
     last_qty: c.last_qty ? String(c.last_qty) : '',
     last_call: c.last_call || '',
     followup_date: c.followup_date ? fmtDay(ymdToDate(c.followup_date)) : '',
+    ...deliveryValues(delivery),
   }
-  // Unknown or empty placeholders become blank; tidy the spaces they leave behind
-  return text.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m))
-    .replace(/[ \t]{2,}/g, ' ').replace(/ ([,.!?])/g, '$1')
+  // A line whose placeholders ALL come out empty is dropped entirely
+  // (e.g. "Returns collected: {returned_summary}" when nothing came back).
+  // Otherwise empty placeholders become blank and the leftover spaces are tidied.
+  return text.split('\n').filter(line => {
+    const keys = [...line.matchAll(/\{(\w+)\}/g)].map(m => m[1]).filter(k => k in values)
+    return keys.length === 0 || keys.some(k => values[k])
+  }).map(line => line.replace(/\{(\w+)\}/g, (m, k) => (k in values ? values[k] : m))
+    .replace(/[ \t]{2,}/g, ' ').replace(/ ([,.!?])/g, '$1')).join('\n')
+}
+
+// delivery = { date: 'YYYY-MM-DD', items: [{ name, delivered, returned, price }] }
+const DELIVERY_KEYS = ['delivery_date', 'delivered_summary', 'delivered_qty', 'returned_summary', 'returned_qty', 'bill_amount']
+function deliveryValues(d) {
+  // outside the delivery message these placeholders are simply blank
+  if (!d) return Object.fromEntries(DELIVERY_KEYS.map(k => [k, '']))
+  const items = d.items || []
+  const list = key => items.filter(i => i[key] > 0).map(i => `${i.name} × ${i[key]}`).join(', ')
+  const sum = key => items.reduce((n, i) => n + (Number(i[key]) || 0), 0)
+  const amount = items.reduce((n, i) => n + ((Number(i.delivered) || 0) - (Number(i.returned) || 0)) * (Number(i.price) || 0), 0)
+  return {
+    delivery_date: d.date ? fmtDay(ymdToDate(d.date)) : '',
+    delivered_summary: list('delivered'),
+    delivered_qty: sum('delivered') ? String(sum('delivered')) : '',
+    returned_summary: list('returned'),
+    returned_qty: sum('returned') ? String(sum('returned')) : '',
+    bill_amount: amount > 0 ? '₹' + amount.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '',
+  }
+}
+
+// Delivery confirmation message for one contact
+export function buildDeliveryText(storeName, storeId, contactName, contactTitle, delivery) {
+  const tpl = cache.wa_msg_delivery || ''
+  const link = (cache.wa_link_delivery || '').trim()
+  return [fillPlaceholders(tpl, storeName, storeId, contactName, contactTitle, delivery).trim(), link].filter(Boolean).join('\n\n')
 }
 
 export function buildWaText(status, storeName, storeId, contactName, contactTitle) {
