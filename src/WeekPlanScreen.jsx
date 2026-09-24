@@ -49,6 +49,7 @@ export default function WeekPlanScreen() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [dueStores, setDueStores] = useState([]) // [{store_id, name, service_minutes, due_date, bearing, skuReqs:[{sku_id,name,qty}]}]
   const [assignment, setAssignment] = useState({}) // storeId -> dayIndex
@@ -506,27 +507,41 @@ export default function WeekPlanScreen() {
   // Batched: a handful of round trips regardless of store count. The previous
   // version issued one select plus one write per stop and per SKU, which grew
   // linearly and took ~15s.
+  // A stop is "protected" (never deleted by Schedule save/reset) if it has real activity
+  // or was added by hand on the Delivery tab: deliveries, a visit mark/remark, a manual note,
+  // or no requirements at all (Schedule always writes requirements for its own stops).
+  const isProtectedStop = ps =>
+    (ps.delivery_lines || []).length > 0 || !!ps.visited_at || !!ps.visit_remark ||
+    ps.notes === 'manual' || (ps.requirements || []).length === 0
+
   async function resetPlan() {
     setResetting(true)
+    setSaveError('')
     setAssignment({})
     setDueStores([])
     setQtyOverrides({})
     sessionStorage.removeItem('prosa_schedule_cache')
-    const { data: { user } } = await supabase.auth.getUser()
-    const today = new Date().toISOString().slice(0, 10)
-    // Find all future plans
-    const { data: futurePlans } = await supabase.from('plans')
-      .select('id').eq('user_id', user.id).gte('plan_date', today)
-    if (futurePlans?.length) {
-      const ids = futurePlans.map(p => p.id)
-      // Only delete stops that have no delivery lines (don't touch history)
-      const { data: stops } = await supabase.from('plan_stops')
-        .select('id, delivery_lines(id)').in('plan_id', ids)
-      const deletable = (stops || []).filter(s => !s.delivery_lines?.length).map(s => s.id)
-      if (deletable.length) {
-        await supabase.from('requirements').delete().in('plan_stop_id', deletable)
-        await supabase.from('plan_stops').delete().in('id', deletable)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      const today = new Date().toLocaleDateString('en-CA') // local date, not UTC
+      const { data: futurePlans, error: e1 } = await supabase.from('plans')
+        .select('id').eq('user_id', user.id).gte('plan_date', today)
+      if (e1) throw e1
+      if (futurePlans?.length) {
+        const { data: stops, error: e2 } = await supabase.from('plan_stops')
+          .select('id, visited_at, visit_remark, notes, delivery_lines(id), requirements(id)')
+          .in('plan_id', futurePlans.map(p => p.id))
+        if (e2) throw e2
+        const deletable = (stops || []).filter(ps => !isProtectedStop(ps)).map(ps => ps.id)
+        if (deletable.length) {
+          const { error: e3 } = await supabase.from('requirements').delete().in('plan_stop_id', deletable)
+          if (e3) throw e3
+          const { error: e4 } = await supabase.from('plan_stops').delete().in('id', deletable)
+          if (e4) throw e4
+        }
       }
+    } catch (e) {
+      setSaveError('Reset did not finish: ' + (e.message || e) + '. Nothing was lost — try again when online.')
     }
     setResetting(false)
     setHasUnsavedChanges(false)
@@ -534,26 +549,34 @@ export default function WeekPlanScreen() {
     load() // recompute from scratch
   }
 
+  // Save order matters: write the new plan FIRST, delete leftovers LAST.
+  // If the signal drops part-way, the worst case is an extra old stop — never an empty plan.
   async function saveWeekPlan(_dueStores, _assignment, _qtyOverrides) {
+    if (saving) return
     setSaving(true)
+    setSaveError('')
+    const fail = (step, err) => {
+      setSaveError(`Save failed while ${step}: ${err?.message || err}. Your plan is still on screen — tap Save again.`)
+      setSaving(false)
+      setSaved(false)
+      setHasUnsavedChanges(true)
+    }
     const { data: { user } } = await supabase.auth.getUser()
 
     const dates = []
     for (let d = 0; d < NUM_DAYS; d++) dates.push(planDates[d] || dateForOffset(d))
 
     // 1. plans for every day at once
-    await supabase.from('plans')
+    const { error: pErr } = await supabase.from('plans')
       .upsert(dates.map(plan_date => ({ user_id: user.id, plan_date, status: 'draft' })),
               { onConflict: 'user_id,plan_date', ignoreDuplicates: true })
-    const { data: plans } = await supabase.from('plans')
+    if (pErr) return fail('creating day plans', pErr)
+    const { data: plans, error: pErr2 } = await supabase.from('plans')
       .select('id, plan_date').eq('user_id', user.id).in('plan_date', dates)
+    if (pErr2) return fail('reading day plans', pErr2)
     const planIdByDate = {}
     ;(plans || []).forEach(p => { planIdByDate[p.plan_date] = p.id })
     const planIds = Object.values(planIdByDate)
-
-    // 2. what already exists, and which stops are protected by real deliveries
-    const { data: existingStops } = await supabase.from('plan_stops')
-      .select('id, plan_id, store_id, delivery_lines(id)').in('plan_id', planIds)
 
     const effectiveDueStores = _dueStores || dueStores
     const effectiveAssignment = _assignment || assignment
@@ -565,22 +588,7 @@ export default function WeekPlanScreen() {
       effectiveByDay[day].push(s)
     })
 
-    const wanted = new Set()
-    dates.forEach((date, day) => {
-      (effectiveByDay[day] || []).forEach(s => wanted.add(`${planIdByDate[date]}_${s.store_id}`))
-    })
-
-    const toDelete = (existingStops || [])
-      .filter(ps => !wanted.has(`${ps.plan_id}_${ps.store_id}`))
-      .filter(ps => (ps.delivery_lines || []).length === 0)
-      .map(ps => ps.id)
-
-    if (toDelete.length) {
-      await supabase.from('requirements').delete().in('plan_stop_id', toDelete)
-      await supabase.from('plan_stops').delete().in('id', toDelete)
-    }
-
-    // 3. all stops in one write
+    // 2. upsert all stops
     const stopRows = []
     dates.forEach((date, day) => {
       const planId = planIdByDate[date]
@@ -590,19 +598,24 @@ export default function WeekPlanScreen() {
       })
     })
     if (stopRows.length) {
-      await supabase.from('plan_stops').upsert(stopRows, { onConflict: 'plan_id,store_id' })
+      const { error } = await supabase.from('plan_stops').upsert(stopRows, { onConflict: 'plan_id,store_id' })
+      if (error) return fail('saving stops', error)
     }
 
-    // 4. resolve ids, then all requirements in one write
-    const { data: savedStops } = await supabase.from('plan_stops')
-      .select('id, plan_id, store_id').in('plan_id', planIds)
+    // 3. resolve ids, then upsert requirements
+    const { data: savedStops, error: sErr } = await supabase.from('plan_stops')
+      .select('id, plan_id, store_id, visited_at, visit_remark, notes, delivery_lines(id), requirements(id)')
+      .in('plan_id', planIds)
+    if (sErr) return fail('reading stops', sErr)
     const stopIdByKey = {}
     ;(savedStops || []).forEach(ps => { stopIdByKey[`${ps.plan_id}_${ps.store_id}`] = ps.id })
 
     const reqRows = []
+    const wanted = new Set()
     dates.forEach((date, day) => {
       const planId = planIdByDate[date]
       ;(effectiveByDay[day] || []).forEach(s => {
+        wanted.add(`${planId}_${s.store_id}`)
         const stopId = stopIdByKey[`${planId}_${s.store_id}`]
         if (!stopId) return
         s.skuReqs.forEach(r => {
@@ -613,20 +626,36 @@ export default function WeekPlanScreen() {
       })
     })
     if (reqRows.length) {
-      await supabase.from('requirements').upsert(reqRows, { onConflict: 'plan_stop_id,sku_id' })
+      const { error } = await supabase.from('requirements').upsert(reqRows, { onConflict: 'plan_stop_id,sku_id' })
+      if (error) return fail('saving quantities', error)
     }
 
-    // Persist pickup allocations so the Delivery tab shows the qty the user
-    // actually decided here, instead of recomputing from the raw forecast.
-    // Full replace: delete all then insert whatever pickupDue currently has.
-    await supabase.from('pickup_allocations').delete().eq('user_id', user.id)
+    // 4. pickup allocations: upsert current, then remove ones no longer wanted
     const pickupAllocRows = pickupDue.flatMap(s => s.skuReqs.map(r => {
       const key = `${s.store_id}-${r.sku_id}`
-      const qty = qtyOverrides[key] !== undefined ? Number(qtyOverrides[key]) : r.qty
-      return { user_id: user.id, store_id: s.store_id, sku_id: r.sku_id, qty }
+      const qty = effectiveOverrides[key] !== undefined ? Number(effectiveOverrides[key]) : r.qty
+      return { user_id: user.id, store_id: s.store_id, sku_id: r.sku_id, qty, updated_at: new Date().toISOString() }
     })).filter(r => r.qty > 0)
     if (pickupAllocRows.length) {
-      await supabase.from('pickup_allocations').insert(pickupAllocRows)
+      const { error } = await supabase.from('pickup_allocations').upsert(pickupAllocRows, { onConflict: 'user_id,store_id,sku_id' })
+      if (error) return fail('saving pickup quantities', error)
+    }
+    const { data: oldAllocs } = await supabase.from('pickup_allocations').select('store_id, sku_id').eq('user_id', user.id)
+    const keepAlloc = new Set(pickupAllocRows.map(r => `${r.store_id}_${r.sku_id}`))
+    for (const a of (oldAllocs || []).filter(a => !keepAlloc.has(`${a.store_id}_${a.sku_id}`))) {
+      await supabase.from('pickup_allocations').delete().eq('user_id', user.id).eq('store_id', a.store_id).eq('sku_id', a.sku_id)
+    }
+
+    // 5. LAST: remove stops that moved off a day — never ones with activity or added by hand
+    const toDelete = (savedStops || [])
+      .filter(ps => !wanted.has(`${ps.plan_id}_${ps.store_id}`))
+      .filter(ps => !isProtectedStop(ps))
+      .map(ps => ps.id)
+    if (toDelete.length) {
+      const { error: rErr } = await supabase.from('requirements').delete().in('plan_stop_id', toDelete)
+      if (rErr) return fail('removing moved stops', rErr)
+      const { error: dErr } = await supabase.from('plan_stops').delete().in('id', toDelete)
+      if (dErr) return fail('removing moved stops', dErr)
     }
 
     setSaving(false)
@@ -959,16 +988,14 @@ export default function WeekPlanScreen() {
 
       {!loading && dueStores.length > 0 && (
         <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
-
+          {saveError && <p className="text-red-400 text-xs mb-2">{saveError}</p>}
           <button
-            onClick={() => { if (hasUnsavedChanges) saveWeekPlan() }}
+            onClick={() => saveWeekPlan()}
             disabled={saving}
             className={`w-full text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-all ${
               saved
                 ? 'bg-green-600 hover:bg-green-700'
-                : hasUnsavedChanges
-                  ? 'bg-[var(--accent)] hover:bg-[var(--accent-hover)]'
-                  : 'bg-[var(--accent)]/30 cursor-default'
+                : 'bg-[var(--accent)] hover:bg-[var(--accent-hover)]'
             }`}
           >
             {saved ? <><CheckCircle size={18} /> Saved!</> : saving ? <><Loader2 size={16} className="animate-spin" /> Saving...</> : <>{hasUnsavedChanges && <AlertTriangle size={14} className="text-[var(--text-gold)]" />} Save Week Plan</>}

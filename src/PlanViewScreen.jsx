@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from './supabaseClient'
 import { fetchMatrix } from './matrixUtils'
+import { notifyStockChanged } from './stockUtils'
 import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
@@ -229,7 +230,7 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
     const insertOrder = pos + 1
     const toShift = stops.filter(s => s.stop_order >= insertOrder).sort((a,b) => b.stop_order - a.stop_order)
     for (const s of toShift) await supabase.from('plan_stops').update({ stop_order: s.stop_order + 1 }).eq('id', s.id)
-    await supabase.from('plan_stops').insert({ plan_id: planId, store_id: preview.id, stop_order: insertOrder })
+    await supabase.from('plan_stops').insert({ plan_id: planId, store_id: preview.id, stop_order: insertOrder, notes: 'manual' })
     setAdding(false)
     onAdded()
   }
@@ -238,10 +239,19 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
     if (adding) return
     setAdding(store.id)
     const { data: plan } = await supabase.from('plans').select('id').eq('plan_date', visitDate).maybeSingle()
-    const targetPlanId = plan?.id || planId
+    // Use (or create) the plan for the chosen date — never fall back to the day on screen
+    let targetPlanId = plan?.id
+    if (!targetPlanId) {
+      const { data: { user } } = await supabase.auth.getUser()
+      const { data: np, error: npErr } = await supabase.from('plans')
+        .upsert({ user_id: user.id, plan_date: visitDate, status: 'draft' }, { onConflict: 'user_id,plan_date' })
+        .select('id').single()
+      if (npErr || !np) { setAdding(null); alert('Could not add visit: ' + (npErr?.message || 'no plan')); return }
+      targetPlanId = np.id
+    }
     const { data: existingStops } = await supabase.from('plan_stops').select('stop_order').eq('plan_id', targetPlanId).order('stop_order', { ascending: false }).limit(1)
     const maxOrder = existingStops?.[0]?.stop_order || 0
-    await supabase.from('plan_stops').insert({ plan_id: targetPlanId, store_id: store.id, stop_order: maxOrder + 1 })
+    await supabase.from('plan_stops').insert({ plan_id: targetPlanId, store_id: store.id, stop_order: maxOrder + 1, notes: 'manual' })
     setAdding(null)
     setProspectAdded(a => new Set([...a, store.id]))
     onAdded()
@@ -454,6 +464,8 @@ export default function PlanViewScreen() {
   const [activeCompleteStop, setActiveCompleteStop] = useState(null)
   const [completeForm, setCompleteForm] = useState({})
   const [completing, setCompleting] = useState(false)
+  const [completeError, setCompleteError] = useState('')
+  const [toast, setToast] = useState('')
   const [batches, setBatches] = useState([])
   const [useLiveOrigin, setUseLiveOrigin] = useState(false)
   const [liveCoords, setLiveCoords] = useState(null)
@@ -792,6 +804,7 @@ export default function PlanViewScreen() {
     setCompleteForm(initial)
     setExtraReqs([])
     setAddSkuOpen(false)
+    setCompleteError('')
     setActiveCompleteStop(stop)
 
     const [{ data: skus }, { data: prior }, { data: storePrices }, { data: lastPrices }] = await Promise.all([
@@ -897,65 +910,77 @@ export default function PlanViewScreen() {
   }
 
   async function submitComplete() {
-    if (!activeCompleteStop || !completeFormValid()) return
+    if (!activeCompleteStop || !completeFormValid() || completing) return
     setCompleting(true)
+    setCompleteError('')
+    const stop = activeCompleteStop
     const dateStr = selectedDate
-    // Impulse-added SKUs need a requirements row first, marked manual so it is
-    // distinguishable from forecast-generated rows. Pickups have no plan_stop,
-    // so extras there just insert straight into delivery_lines below.
-    if (!activeCompleteStop.is_pickup) {
-      for (const extra of extraReqs) {
-        const line = completeForm[extra.sku_id]
-        await supabase.from('requirements').insert({
-          plan_stop_id: activeCompleteStop.id,
-          sku_id: extra.sku_id,
-          proposed_qty: 0,
-          approved_qty: Number(line?.qty_delivered) || 0,
-          source: 'manual',
-        })
-      }
+    const fail = msg => { setCompleteError(msg); setCompleting(false) }
+
+    // Impulse-added SKUs need a requirements row, marked manual. Upsert so a redo after
+    // Undo never creates a second row for the same product. Pickups have no plan_stop.
+    if (!stop.is_pickup && extraReqs.length) {
+      const { error } = await supabase.from('requirements').upsert(extraReqs.map(extra => ({
+        plan_stop_id: stop.id,
+        sku_id: extra.sku_id,
+        proposed_qty: 0,
+        approved_qty: Number(completeForm[extra.sku_id]?.qty_delivered) || 0,
+        source: 'manual',
+      })), { onConflict: 'plan_stop_id,sku_id' })
+      if (error) return fail('Could not save: ' + error.message + '. Nothing was recorded — try again.')
     }
 
-    const rows = [
-      ...activeCompleteStop.requirements.map(r => ({ sku_id: r.sku_id })),
-      ...extraReqs.map(e => ({ sku_id: e.sku_id })),
-    ]
+    // De-duplicate SKUs (a product can't be delivered twice in one visit)
+    const skuIds = [...new Set([
+      ...stop.requirements.map(r => r.sku_id),
+      ...extraReqs.map(e => e.sku_id),
+    ])].filter(id => completeForm[id])
 
-    for (const req of rows) {
-      const line = completeForm[req.sku_id]
-      if (!line) continue
-      await supabase.from('delivery_lines').insert({
-        plan_stop_id: activeCompleteStop.is_pickup ? null : activeCompleteStop.id,
-        sku_id: req.sku_id,
+    // All delivery lines in ONE request — it either fully saves or not at all
+    const lineRows = skuIds.map(skuId => {
+      const line = completeForm[skuId]
+      return {
+        plan_stop_id: stop.is_pickup ? null : stop.id,
+        sku_id: skuId,
         batch_id: line.batch_id || null,
         qty_delivered: Number(line.qty_delivered) || 0,
         delivered_on: dateStr,
-        store_id: activeCompleteStop.store_id,
-        unit_price: line.unit_price !== '' ? Number(line.unit_price) : null,
+        store_id: stop.store_id,
+        unit_price: line.unit_price !== '' && line.unit_price != null && !isNaN(Number(line.unit_price)) ? Number(line.unit_price) : null,
         is_offer: line.is_offer || false,
         store_balance: line.store_balance !== '' && line.store_balance !== undefined ? Number(line.store_balance) : null,
-      })
-      // Returns belong to the EARLIER delivery that carried the stock,
-      // never to the line we just created.
-      if (Number(line.qty_returned) > 0) {
-        // Link to the delivery when we can identify it. When we can't, record
-        // the return against the store and SKU instead of guessing a delivery —
-        // a wrong link corrupts that delivery's sold figure permanently.
-        await supabase.from('returns').insert({
-          delivery_line_id: line.return_line_id || null,
-          store_id: activeCompleteStop.store_id,
-          sku_id: req.sku_id,
-          produced_on: line.return_date_text || null,
-          qty_returned: Number(line.qty_returned),
-          returned_on: dateStr,
-          possible_stockout: false,
-          reason: line.return_line_id ? null : 'No matching delivery on record',
-        })
+      }
+    })
+    const { data: inserted, error: lErr } = await supabase.from('delivery_lines').insert(lineRows).select('id')
+    if (lErr) return fail('Could not save delivery: ' + lErr.message + '. Nothing was recorded — try again.')
+
+    // Returns belong to the EARLIER delivery that carried the stock, never to the new line.
+    const returnRows = skuIds.filter(id => Number(completeForm[id].qty_returned) > 0).map(skuId => {
+      const line = completeForm[skuId]
+      return {
+        delivery_line_id: line.return_line_id || null,
+        store_id: stop.store_id,
+        sku_id: skuId,
+        produced_on: line.return_date_text || null,
+        qty_returned: Number(line.qty_returned),
+        returned_on: dateStr,
+        possible_stockout: false,
+        reason: line.return_line_id ? null : 'No matching delivery on record',
+      }
+    })
+    if (returnRows.length) {
+      const { error: rErr } = await supabase.from('returns').insert(returnRows)
+      if (rErr) {
+        // Roll back the delivery lines so a retry doesn't double them
+        await supabase.from('delivery_lines').delete().in('id', (inserted || []).map(d => d.id))
+        return fail('Could not save returns: ' + rErr.message + '. Nothing was recorded — try again.')
       }
     }
-    setCompletedStopIds(s => new Set([...s, activeCompleteStop.id]))
+    setCompletedStopIds(s => new Set([...s, stop.id]))
     setCompleting(false)
     setActiveCompleteStop(null)
+    loadBatches()
+    notifyStockChanged()
   }
 
   const [dragIdx, setDragIdx] = useState(null)
@@ -1065,6 +1090,9 @@ export default function PlanViewScreen() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
+      {toast && (
+        <div onClick={() => setToast('')} className="fixed top-4 left-4 right-4 z-[70] bg-red-900/90 text-red-100 text-sm rounded-xl px-4 py-3 shadow-xl">{toast}</div>
+      )}
       <div className="px-3 py-1.5 border-b border-[var(--bg-input)] flex items-center gap-2 shrink-0">
         <Calendar size={13} className="text-[var(--text-accent)] shrink-0" />
         <div className="relative shrink-0">
@@ -1278,19 +1306,26 @@ export default function PlanViewScreen() {
                         // (which may point to an older delivery_line if the pack expired
                         // stock came from an earlier drop).
                         const dateStr = selectedDate
-                        const { data: dls } = await supabase.from('delivery_lines').select('id')
+                        const { data: dls, error: e0 } = await supabase.from('delivery_lines').select('id')
                           .or(`plan_stop_id.eq.${stop.id},and(store_id.eq.${stop.store_id},delivered_on.eq.${dateStr})`)
+                        if (e0) { setToast('Undo failed — check your connection and try again'); return }
+                        // Returns first (they reference the lines), then lines. Stop at the first failure
+                        // so the stop stays marked delivered and nothing gets recorded twice.
                         if (dls?.length) {
-                          for (const dl of dls) {
-                            await supabase.from('returns').delete().eq('delivery_line_id', dl.id)
-                          }
-                          await supabase.from('delivery_lines').delete().in('id', dls.map(d => d.id))
+                          const { error: e1 } = await supabase.from('returns').delete().in('delivery_line_id', dls.map(d => d.id))
+                          if (e1) { setToast('Undo failed — check your connection and try again'); return }
                         }
-                        // Sweep returns entered during this visit even if linked to older deliveries
-                        await supabase.from('returns').delete()
+                        const { error: e2 } = await supabase.from('returns').delete()
                           .eq('store_id', stop.store_id)
                           .eq('returned_on', dateStr)
+                        if (e2) { setToast('Undo failed — check your connection and try again'); return }
+                        if (dls?.length) {
+                          const { error: e3 } = await supabase.from('delivery_lines').delete().in('id', dls.map(d => d.id))
+                          if (e3) { setToast('Undo failed — check your connection and try again'); return }
+                        }
                         setCompletedStopIds(s => { const n = new Set(s); n.delete(stop.id); return n })
+                        loadBatches()
+                        notifyStockChanged()
                       }} className="text-[var(--text-muted2)] hover:text-red-400 text-xs transition-colors">
                         Undo
                       </button>
@@ -1559,6 +1594,7 @@ export default function PlanViewScreen() {
             })()}
           </div>
           <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
+            {completeError && <p className="text-red-400 text-xs mb-2">{completeError}</p>}
             <button onClick={submitComplete} disabled={completing || !completeFormValid()}
               className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors">
               {completing ? <Loader2 size={16} className="animate-spin" /> : 'Confirm Delivery'}

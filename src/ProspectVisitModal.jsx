@@ -43,7 +43,16 @@ export default function ProspectVisitModal({ planId, stops, onClose, onAdded, de
     // Find the plan for the selected date
     const { data: plan } = await supabase.from('plans')
       .select('id').eq('plan_date', visitDate).maybeSingle()
-    const targetPlanId = plan?.id || planId
+    // Use (or create) the plan for the chosen date — never fall back to the day on screen
+    let targetPlanId = plan?.id
+    if (!targetPlanId) {
+      const { data: { user } } = await supabase.auth.getUser()
+      const { data: np, error: npErr } = await supabase.from('plans')
+        .upsert({ user_id: user.id, plan_date: visitDate, status: 'draft' }, { onConflict: 'user_id,plan_date' })
+        .select('id').single()
+      if (npErr || !np) { setAdding(null); alert('Could not add visit: ' + (npErr?.message || 'no plan')); return }
+      targetPlanId = np.id
+    }
     const { data: existingStops } = await supabase.from('plan_stops')
       .select('stop_order').eq('plan_id', targetPlanId).order('stop_order', { ascending: false }).limit(1)
     const maxOrder = existingStops?.[0]?.stop_order || 0
@@ -51,6 +60,7 @@ export default function ProspectVisitModal({ planId, stops, onClose, onAdded, de
       plan_id: targetPlanId,
       store_id: store.id,
       stop_order: maxOrder + 1,
+      notes: 'manual',
     })
     setAdding(null)
     setAdded(a => new Set([...a, store.id]))
