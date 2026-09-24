@@ -4,7 +4,8 @@ import { fetchAll, localISO } from './dbUtils'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import PipelineTag from './PipelineTag'
 import { useGeolocation, haversineKm } from './useGeolocation'
-import { TrendingUp, TrendingDown, AlertTriangle, Package, Star } from 'lucide-react'
+import { TrendingUp, TrendingDown, AlertTriangle, Package, Star, ClipboardList } from 'lucide-react'
+import { CallLogModal } from './FollowupsCard'
 
 function fmt(n) { return `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` }
 function pct(n) { if (n === null || n === undefined) return null; const v = Number(n); return `${v > 0 ? '+' : ''}${v.toFixed(1)}%` }
@@ -17,7 +18,32 @@ function GrowthBadge({ g }) {
   return <span className="text-[var(--text-muted2)] text-xs">{pct(g)}</span>
 }
 
-function StoreCard({ s, phones, onChanged, position }) {
+function fmtShort(ymd) {
+  if (!ymd) return ''
+  const [y, m, d] = ymd.slice(0, 10).split('-').map(Number)
+  return new Date(y, m - 1, d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
+// Latest call on its own full-width line so the remark isn't cut off; tap opens the log
+function LastCall({ c, onOpen }) {
+  const due = c.follow_up_on && c.follow_up_on <= localISO()
+  return (
+    <button onClick={onOpen} className="w-full text-left pt-1.5 border-t border-white/5 flex items-start gap-2">
+      <span className="text-[11px] shrink-0 mt-px">📞</span>
+      <span className="flex-1 min-w-0">
+        <span className="text-[var(--text-muted)] text-xs">{fmtShort(localISO(new Date(c.called_at)))}</span>
+        {c.note && <span className="text-[var(--text-secondary)] text-xs whitespace-pre-wrap break-words"> · {c.note}</span>}
+        {c.follow_up_on && (
+          <span className={`block text-[11px] font-medium mt-0.5 ${due ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted)]'}`}>
+            {due ? '⏰ Follow up ' : 'Follow up '}{fmtShort(c.follow_up_on)}
+          </span>
+        )}
+      </span>
+    </button>
+  )
+}
+
+function StoreCard({ s, phones, onChanged, position, lastCall, onOpenLog }) {
   const dormant = s.days_since_visit > 14
   const highReturns = Number(s.return_pct) > 20
   const bigDrop = s.growth_pct !== null && Number(s.growth_pct) <= -30 && s.visit_count >= 5
@@ -57,7 +83,13 @@ function StoreCard({ s, phones, onChanged, position }) {
               <span>{s.visit_count} visits</span>
             </div>
           </div>
-          <ContactButtons phone={phones[s.store_id]} size={13} />
+          <span className="flex items-center gap-2 shrink-0">
+            <ContactButtons phone={phones[s.store_id]} variant="pill" storeId={s.store_id} storeName={s.name} />
+            <button onClick={e => { e.stopPropagation(); onOpenLog() }} title="Call log" aria-label="Call log"
+              className="h-9 px-3 rounded-full bg-[var(--bg-input)] text-[var(--text-secondary)] hover:bg-[var(--accent)]/15 hover:text-[var(--accent)] flex items-center gap-1.5 text-xs font-medium transition-colors">
+              <ClipboardList size={16} /> Log
+            </button>
+          </span>
         </div>
 
         <div className="flex items-baseline justify-between gap-3">
@@ -70,6 +102,7 @@ function StoreCard({ s, phones, onChanged, position }) {
           </div>
           <GrowthBadge g={s.growth_pct} />
         </div>
+        {lastCall && <LastCall c={lastCall} onOpen={onOpenLog} />}
 
         {(hasReturns || hasWaste) && (
           <div className="flex items-center gap-3 text-xs pt-1.5 border-t border-white/5 flex-wrap">
@@ -110,6 +143,23 @@ export default function SalesScreen() {
   const [sortBy, setSortBy] = useState('distance')
   const [showExpiryPopup, setShowExpiryPopup] = useState(false)
   const phones = useStoreContacts()
+  const [lastCalls, setLastCalls] = useState({}) // store_id -> latest call log
+  const [logStore, setLogStore] = useState(null)
+
+  // Latest call per store; refresh when a call is logged from the follow-up prompt
+  useEffect(() => {
+    const load = async () => {
+      const { data: logs } = await supabase.from('call_logs')
+        .select('store_id, note, follow_up_on, called_at').not('store_id', 'is', null)
+        .order('called_at', { ascending: false }).limit(500)
+      const map = {}
+      ;(logs || []).forEach(l => { if (!map[l.store_id]) map[l.store_id] = l })
+      setLastCalls(map)
+    }
+    load()
+    window.addEventListener('prosa:call_logged', load)
+    return () => window.removeEventListener('prosa:call_logged', load)
+  }, [])
 
   useEffect(() => { (async () => {
     const { data: rows } = await supabase
@@ -168,6 +218,7 @@ export default function SalesScreen() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      {logStore && <CallLogModal store={logStore} onClose={() => setLogStore(null)} />}
       <div className="px-4 pt-4 pb-2 shrink-0">
         <div className="grid grid-cols-3 gap-2 mb-3">
           <button onClick={() => setShowSalesPopup(true)}
@@ -222,7 +273,7 @@ export default function SalesScreen() {
             <p>No stores in this view</p>
           </div>
         )}
-        {rows.map(s => <StoreCard key={s.store_id} s={s} phones={phones} onChanged={() => setReloadKey(k => k + 1)} position={position} />)}
+        {rows.map(s => <StoreCard key={s.store_id} s={s} phones={phones} onChanged={() => setReloadKey(k => k + 1)} position={position} lastCall={lastCalls[s.store_id]} onOpenLog={() => setLogStore({ store_id: s.store_id, name: s.name })} />)}
       </div>
       {showSalesPopup && <SalesPopup onClose={() => setShowSalesPopup(false)} stores={data} />}
       {showExpiryPopup && <ExpiryPopup onClose={() => setShowExpiryPopup(false)} stores={data} />}

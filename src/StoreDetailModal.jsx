@@ -204,7 +204,7 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
   async function confirmCallLog(didCall) {
     if (didCall) {
       setSavingCall(true)
-      await supabase.from('call_logs').insert({ store_contact_id: callTarget.id, note: callNote.trim() || null })
+      await supabase.from('call_logs').insert({ store_contact_id: callTarget.id, store_id: store.id, note: callNote.trim() || null })
       setSavingCall(false)
     }
     setCallTarget(null)

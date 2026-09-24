@@ -5,6 +5,7 @@ import { fetchAll, localISO, daysUntilDate } from './dbUtils'
 import { fetchBatchUsage } from './stockUtils'
 import StockAdjustModal from './StockAdjustModal'
 import StoreMap from './StoreMap'
+import FollowupsCard from './FollowupsCard'
 import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
 import { ArrowUp, ArrowDown, Minus, X, Clock, Navigation } from 'lucide-react'
@@ -231,6 +232,8 @@ export default function DashboardScreen() {
           <Ticker current={stats.activeThisMonth} previous={stats.activeLastMonth} />
         </div>
       </div>
+
+      <FollowupsCard />
 
       <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
         <div className="flex items-center justify-between mb-2">

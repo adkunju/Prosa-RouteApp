@@ -305,7 +305,7 @@ export default function AllocationScreen() {
                 <div className="flex items-center gap-1">
                   <span className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</span>
                   {row.pipeline_status === 'dormant' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[var(--text-gold)]/20 text-[var(--text-gold)] shrink-0">DORMANT</span>}
-                  <ContactButtons phone={phones[row.store_id]} />
+                  <ContactButtons phone={phones[row.store_id]} storeId={row.store_id} storeName={row.store_name} />
                 </div>
                 <div className="text-[var(--text-muted)] text-xs mt-0.5">
                   {row.sku_name}
