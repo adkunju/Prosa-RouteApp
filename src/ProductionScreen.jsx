@@ -38,7 +38,7 @@ export default function ProductionScreen() {
       supabase.from('production_batches').select('*, skus(name, shelf_life_days)').order('produced_on', { ascending: false }).limit(40),
       supabase.from('skus').select('id, name').eq('is_active', true).order('name'),
       fetchBatchUsage(),
-      supabase.from('stock_adjustments').select('id, qty, reason, notes, adjusted_on, skus(name), production_batches(produced_on)')
+      supabase.from('stock_adjustments').select('id, qty, reason, notes, adjusted_on, created_at, skus(name), production_batches(produced_on)')
         .order('adjusted_on', { ascending: false }).order('created_at', { ascending: false }).limit(20),
     ])
     if (b) setBatches(b.map(batch => ({ ...batch, consumed: delivered[batch.id] || 0, adjusted: adjusted[batch.id] || 0, available: batch.qty - (used[batch.id] || 0) })))
@@ -128,7 +128,12 @@ export default function ProductionScreen() {
   }
 
   const activeBatches = batches.filter(b => daysLeft(b.expires_on) > 0)
-  const expiredBatches = batches.filter(b => daysLeft(b.expires_on) <= 0)
+  // Batches (by production date) and adjustments (by adjustment date) in one list, newest first
+  const timeline = [
+    ...batches.map(b => ({ kind: 'batch', id: b.id, date: b.produced_on, created: b.created_at || '', b })),
+    ...adjustments.map(a => ({ kind: 'adj', id: a.id, date: a.adjusted_on, created: a.created_at || '', a })),
+  ].sort((x, y) => y.date.localeCompare(x.date) || y.created.localeCompare(x.created))
+  const dayHeader = ymd => { const [y, m, d] = ymd.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) }
 
   const banner = prefill && (
     <div className="mx-4 mt-4 bg-[var(--bg-card)]/60 border border-[var(--accent)]/40 rounded-2xl p-4">
@@ -175,7 +180,32 @@ export default function ProductionScreen() {
           </div>
         )}
 
-        {activeBatches.map(b => (
+        {/* One chronological log: production batches and stock adjustments, newest first */}
+        {timeline.map((e, i) => (
+          <div key={e.kind + e.id}>
+            {(i === 0 || timeline[i - 1].date !== e.date) && (
+              <div className="text-[var(--text-muted2)] text-xs font-medium uppercase tracking-wide mt-2 mb-1.5">{dayHeader(e.date)}</div>
+            )}
+            {e.kind === 'adj' ? (
+              <div className="bg-[var(--bg-card)] rounded-xl px-4 py-3 border-l-2 border-[var(--text-amber)]">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[var(--text-primary)] text-sm font-medium flex items-center gap-1.5">
+                      <PackageMinus size={14} className="text-[var(--text-amber)]" /> −{e.a.qty} {e.a.skus?.name}
+                    </div>
+                    <div className="text-[var(--text-muted2)] text-xs mt-0.5">
+                      <span className="text-[var(--text-amber)]">{reasonLabel(e.a.reason)}</span>
+                      {e.a.production_batches?.produced_on && ` · from batch ${e.a.production_batches.produced_on}`}
+                      {e.a.notes && ` · ${e.a.notes}`}
+                    </div>
+                  </div>
+                  <button onClick={() => undoAdjustment(e.a.id)} disabled={undoingId === e.a.id}
+                    className="text-[var(--text-muted2)] hover:text-red-400 text-xs shrink-0">
+                    {undoingId === e.a.id ? '...' : 'Undo'}
+                  </button>
+                </div>
+              </div>
+            ) : daysLeft(e.b.expires_on) > 0 ? (() => { const b = e.b; return (
           <div key={b.id} className="bg-[var(--bg-card)] rounded-xl p-4">
             <div className="flex items-start justify-between">
               <div className="flex-1 min-w-0">
@@ -207,6 +237,18 @@ export default function ProductionScreen() {
               </div>
             </div>
           </div>
+            ) })() : (
+              <div className="bg-[var(--bg-card)]/50 rounded-xl p-4 opacity-60">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="text-[var(--text-secondary)] font-medium">{e.b.skus?.name}</div>
+                    <div className="text-[var(--text-muted2)] text-sm mt-0.5">{e.b.qty} produced · {e.b.consumed} delivered{e.b.adjusted ? ` · ${e.b.adjusted} adjusted` : ''}</div>
+                  </div>
+                  <ExpiryBadge days={daysLeft(e.b.expires_on)} />
+                </div>
+              </div>
+            )}
+          </div>
         ))}
 
         {editingBatch && (
@@ -231,52 +273,6 @@ export default function ProductionScreen() {
 
         {adjustBatch && <StockAdjustModal batch={adjustBatch} onClose={() => setAdjustBatch(null)} onSaved={load} />}
 
-        {adjustments.length > 0 && (
-          <>
-            <div className="flex items-center gap-2 mt-2">
-              <PackageMinus size={14} className="text-[var(--text-muted2)]" />
-              <span className="text-[var(--text-muted2)] text-xs">Stock adjustments</span>
-            </div>
-            {adjustments.map(a => (
-              <div key={a.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-3 border-l-2 border-[var(--text-amber)]">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[var(--text-primary)] text-sm font-medium">−{a.qty} {a.skus?.name}</div>
-                    <div className="text-[var(--text-muted2)] text-xs mt-0.5">
-                      <span className="text-[var(--text-amber)]">{reasonLabel(a.reason)}</span> · {a.adjusted_on}
-                      {a.production_batches?.produced_on && ` · batch ${a.production_batches.produced_on}`}
-                      {a.notes && ` · ${a.notes}`}
-                    </div>
-                  </div>
-                  <button onClick={() => undoAdjustment(a.id)} disabled={undoingId === a.id}
-                    className="text-[var(--text-muted2)] hover:text-red-400 text-xs shrink-0">
-                    {undoingId === a.id ? '...' : 'Undo'}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </>
-        )}
-
-        {expiredBatches.length > 0 && (
-          <>
-            <div className="flex items-center gap-2 mt-2">
-              <AlertTriangle size={14} className="text-[var(--text-muted2)]" />
-              <span className="text-[var(--text-muted2)] text-xs">Expired batches</span>
-            </div>
-            {expiredBatches.slice(0, 5).map(b => (
-              <div key={b.id} className="bg-[var(--bg-card)]/50 rounded-xl p-4 opacity-50">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="text-[var(--text-secondary)] font-medium">{b.skus?.name}</div>
-                    <div className="text-[var(--text-muted2)] text-sm mt-0.5">{b.qty} pcs · {b.produced_on}</div>
-                  </div>
-                  <ExpiryBadge days={daysLeft(b.expires_on)} />
-                </div>
-              </div>
-            ))}
-          </>
-        )}
       </div>
 
       {/* Form */}
