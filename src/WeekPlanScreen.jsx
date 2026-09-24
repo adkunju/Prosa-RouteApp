@@ -114,10 +114,14 @@ export default function WeekPlanScreen() {
 
     const [{ data: forecast }, { data: stores }, { data: matrix }, { data: batches }, { used: consumedByBatch }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
-      supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup').eq('is_active', true),
+      supabase.from('stores').select('id, name, lat, lng, service_minutes, is_depot, is_pickup, is_d2c, pipeline_status').eq('is_active', true),
       fetchMatrix().then(data => ({ data }), () => ({ data: [] })),
       supabase.from('production_batches').select('id, sku_id, qty, produced_on, expires_on, is_spare').gt('expires_on', localDateStr).order('produced_on'),
       fetchBatchUsage(),
+    ])
+    const [{ data: activeSkus }, { data: savedAllocs }] = await Promise.all([
+      supabase.from('skus').select('id, name').eq('is_active', true).order('name'),
+      supabase.from('pickup_allocations').select('store_id, sku_id, qty'),
     ])
 
     // Build available stock map — split regular vs spare
@@ -182,6 +186,21 @@ export default function WeekPlanScreen() {
     const allDue = Object.values(byStore)
     const stores_due = allDue.filter(s => !s.is_pickup)
     const pickupStores = allDue.filter(s => s.is_pickup)
+
+    // D2C (friends & family) isn't forecast, but still collects from the depot like Moolans.
+    // It always appears in the pickup section; quantity is set by hand (starts at the last
+    // saved amount, else 0), so stock can be held back for D2C orders.
+    ;(stores || []).filter(st => st.is_d2c && st.is_pickup && st.pipeline_status !== 'dropped' && !pickupStores.some(p => p.store_id === st.id))
+      .forEach(st => {
+        pickupStores.push({
+          store_id: st.id, name: st.name, service_minutes: 0, is_pickup: true, is_d2c: true,
+          due_date: todayStr, bearing: 0,
+          skuReqs: (activeSkus || []).map(sk => ({
+            sku_id: sk.id, name: sk.name,
+            qty: (savedAllocs || []).find(a => a.store_id === st.id && a.sku_id === sk.id)?.qty || 0,
+          })),
+        })
+      })
 
     // Ration available stock across ALL due stores using total stock across all days
     // Use cumulative stock (today + future batches) for allocation planning
@@ -398,7 +417,8 @@ export default function WeekPlanScreen() {
 
   function skipStore(store) {
     setDueStores(ds => ds.filter(s => s.store_id !== store.store_id))
-    setUnscheduled(u => [...u, { ...store, skipReason: 'Manually skipped' }])
+    setPickupDue(ps => ps.filter(s => s.store_id !== store.store_id))
+    if (!store.is_pickup) setUnscheduled(u => [...u, { ...store, skipReason: 'Manually skipped' }])
     setAssignment(a => { const n = { ...a }; delete n[store.store_id]; return n })
     setHasUnsavedChanges(true)
     setSaved(false)

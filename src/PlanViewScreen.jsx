@@ -573,9 +573,9 @@ export default function PlanViewScreen() {
     // Load depot pickups due on/before this date
     const [{ data: forecast }, { data: pickupStores }, { data: pickupDeliveredToday }, { data: pickupOverrides }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
-      supabase.from('stores').select('id, name, is_pickup, is_active').eq('is_pickup', true).eq('is_active', true),
+      supabase.from('stores').select('id, name, is_pickup, is_active, is_d2c, pipeline_status').eq('is_pickup', true).eq('is_active', true),
       supabase.from('delivery_lines').select('store_id').eq('delivered_on', date).is('plan_stop_id', null),
-      supabase.from('pickup_allocations').select('store_id, sku_id, qty'),
+      supabase.from('pickup_allocations').select('store_id, sku_id, qty, updated_at'),
     ])
     const pickupOverrideMap = {}
     ;(pickupOverrides || []).forEach(o => { pickupOverrideMap[`${o.store_id}_${o.sku_id}`] = o.qty })
@@ -599,6 +599,26 @@ export default function PlanViewScreen() {
       byPickupStore[r.store_id].skuReqs.push({ sku_id: r.sku_id, name: r.sku_name, qty })
       if (r.next_visit_due < byPickupStore[r.store_id].due_date) byPickupStore[r.store_id].due_date = r.next_visit_due
     })
+    // D2C: no forecast — show it when the Schedule set aside a quantity for it, until that
+    // allocation has been collected (a D2C delivery recorded after the allocation was saved)
+    const d2cStores = (pickupStores || []).filter(st => st.is_d2c && st.pipeline_status !== 'dropped' && !byPickupStore[st.id])
+    if (d2cStores.length) {
+      const [{ data: skuRows }, { data: d2cLines }] = await Promise.all([
+        supabase.from('skus').select('id, name'),
+        supabase.from('delivery_lines').select('store_id, created_at, delivered_on').in('store_id', d2cStores.map(st => st.id)).order('created_at', { ascending: false }).limit(50),
+      ])
+      d2cStores.forEach(st => {
+        const allocs = (pickupOverrides || []).filter(o => o.store_id === st.id && o.qty > 0)
+        if (!allocs.length) return
+        const allocAt = allocs.reduce((m, o) => (o.updated_at > m ? o.updated_at : m), '')
+        const collectedAfter = (d2cLines || []).some(l => l.store_id === st.id && l.created_at > allocAt && l.delivered_on !== date)
+        if (collectedAfter && !deliveredPickupToday.has(st.id)) return
+        byPickupStore[st.id] = {
+          store_id: st.id, name: st.name, due_date: date, is_d2c: true,
+          skuReqs: allocs.map(o => ({ sku_id: o.sku_id, name: (skuRows || []).find(k => k.id === o.sku_id)?.name || 'Item', qty: o.qty })),
+        }
+      })
+    }
     setPickupDueToday(Object.values(byPickupStore).filter(s => s.skuReqs.some(r => r.qty > 0)))
 
     // Re-hydrate pickup completions after reload so cards remember their state
