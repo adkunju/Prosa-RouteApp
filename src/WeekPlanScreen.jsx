@@ -7,7 +7,8 @@ import StockAdjustModal from './StockAdjustModal'
 import { useSettings } from './useSettings'
 import { fuzzyMatch } from './fuzzy'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
-import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package, X } from 'lucide-react'
+import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package, X, History } from 'lucide-react'
+import StoreHistoryModal from './StoreHistoryModal'
 
 const NUM_DAYS = 6
 const DAILY_BUDGET_MIN = 360 // 6 hours
@@ -95,6 +96,7 @@ export default function WeekPlanScreen() {
   const [availableStock, setAvailableStock] = useState({}) // sku_id -> available pcs
   const [spareStock, setSpareStock] = useState({}) // sku_id -> spare pcs
   const [showAdjust, setShowAdjust] = useState(false)
+  const [historyFor, setHistoryFor] = useState(null)
   const [matrixMeters, setMatrixMeters] = useState({})
   const [depotId, setDepotId] = useState(null)
 
@@ -192,7 +194,7 @@ export default function WeekPlanScreen() {
     // saved amount, else 0), so stock can be held back for D2C orders.
     ;(stores || []).filter(st => st.is_d2c && st.is_pickup && st.pipeline_status !== 'dropped' && !pickupStores.some(p => p.store_id === st.id))
       .forEach(st => {
-        pickupStores.push({
+        pickupStores.unshift({ // D2C always at the top of the list
           store_id: st.id, name: st.name, service_minutes: 0, is_pickup: true, is_d2c: true,
           due_date: todayStr, bearing: 0,
           skuReqs: (activeSkus || []).map(sk => ({
@@ -223,7 +225,7 @@ export default function WeekPlanScreen() {
         return { ...r, qty, requested: r.qty }
       })
     })
-    setPickupDue(pickupStores)
+    setPickupDue([...pickupStores].sort((a, b) => (b.is_d2c ? 1 : 0) - (a.is_d2c ? 1 : 0)))
 
     // Split: zero-stock stores go to skipped popup, deliverable get routed
     const zeroStockSet = new Set(stores_due.filter(s => s.skuReqs.every(r => r.qty === 0)).map(s => s.store_id))
@@ -687,6 +689,7 @@ export default function WeekPlanScreen() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {showAdjust && <StockAdjustModal onClose={() => setShowAdjust(false)} />}
+      {historyFor && <StoreHistoryModal {...historyFor} onClose={() => setHistoryFor(null)} />}
       <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
         <span className="text-[var(--text-muted)] text-sm flex items-center gap-1.5">
           <>
@@ -831,15 +834,15 @@ export default function WeekPlanScreen() {
         )}
 
         {!loading && pickupDue.length > 0 && (
-          <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--text-gold)]/30 rounded-2xl p-4">
+          <div onClick={() => setShowPickupDetail(true)} role="button"
+            className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--text-gold)]/30 rounded-2xl p-4 cursor-pointer active:scale-[0.99] transition-transform">
             <div className="flex items-center justify-between">
               <span className="text-[var(--text-primary)] text-sm font-medium flex items-center gap-2">
-                <Package size={14} className="text-[var(--text-gold)]" /> Collecting from depot
+                <Package size={14} className="text-[var(--text-gold)]" /> Depot Drop-off &amp; D2C
               </span>
-              <button onClick={() => setShowPickupDetail(true)}
-                className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs transition-colors">
+              <span className="text-[var(--text-muted2)] text-xs">
                 {pickupDue.length} stores ›
-              </button>
+              </span>
             </div>
             <div className="mt-2 pt-2 border-t border-[var(--bg-input)]/40">
               {Object.entries(pickupDue.reduce((acc, s) => {
@@ -992,7 +995,11 @@ export default function WeekPlanScreen() {
                       </div>
                     )}
                     {/* Skip button */}
-                    <div className="ml-5 mt-1.5">
+                    <div className="ml-5 mt-1.5 flex items-center gap-4">
+                      <button onClick={() => setHistoryFor({ storeId: s.store_id, storeName: s.name })}
+                        className="text-[var(--accent)] text-xs font-medium flex items-center gap-1">
+                        <History size={12} /> See history
+                      </button>
                       <button onClick={() => skipStore(s)}
                         className="text-[var(--text-muted2)] hover:text-red-400 text-xs transition-colors">
                         Skip this store
@@ -1329,7 +1336,7 @@ export default function WeekPlanScreen() {
           <div onClick={e => e.stopPropagation()}
             className="m-4 mt-16 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[70vh] overflow-y-auto shadow-2xl">
             <div className="flex items-center justify-between mb-3">
-              <span className="text-[var(--text-primary)] text-sm font-semibold">Collecting from depot</span>
+              <span className="text-[var(--text-primary)] text-sm font-semibold">Depot Drop-off &amp; D2C</span>
               <button onClick={() => setShowPickupDetail(false)} className="text-[var(--text-muted)]">✕</button>
             </div>
             {pickupDue.map(s => (

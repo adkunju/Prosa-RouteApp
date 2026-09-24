@@ -619,7 +619,8 @@ export default function PlanViewScreen() {
         }
       })
     }
-    setPickupDueToday(Object.values(byPickupStore).filter(s => s.skuReqs.some(r => r.qty > 0)))
+    setPickupDueToday(Object.values(byPickupStore).filter(s => s.skuReqs.some(r => r.qty > 0))
+      .sort((a, b) => (b.is_d2c ? 1 : 0) - (a.is_d2c ? 1 : 0))) // D2C always first
 
     // Re-hydrate pickup completions after reload so cards remember their state
     if (deliveredPickupToday.size > 0) {
