@@ -4,6 +4,7 @@ import { daysUntilDate } from './dbUtils'
 import { Plus, X, FlaskConical, AlertTriangle, Pencil, Trash2, PackageMinus } from 'lucide-react'
 import { fetchBatchUsage, notifyStockChanged, reasonLabel } from './stockUtils'
 import StockAdjustModal from './StockAdjustModal'
+import BatchSummaryModal from './BatchSummaryModal'
 
 // Days until expires_on by calendar date. expires_on is the first day the batch can't be
 // sold (produced_on + shelf life), so 1 = today is the last selling day, 0 or less = expired.
@@ -32,16 +33,21 @@ export default function ProductionScreen() {
   const [adjustBatch, setAdjustBatch] = useState(null)
   const [adjustments, setAdjustments] = useState([])
   const [undoingId, setUndoingId] = useState(null)
+  const [summaryBatch, setSummaryBatch] = useState(null)
 
   async function load() {
-    const [{ data: b }, { data: s }, { used, delivered, adjusted }, { data: adj }] = await Promise.all([
+    const [{ data: b }, { data: s }, { used, delivered, adjusted }, { data: adj }, { data: rets }] = await Promise.all([
       supabase.from('production_batches').select('*, skus(name, shelf_life_days)').order('produced_on', { ascending: false }).limit(40),
       supabase.from('skus').select('id, name').eq('is_active', true).order('name'),
       fetchBatchUsage(),
       supabase.from('stock_adjustments').select('id, qty, reason, notes, adjusted_on, created_at, skus(name), production_batches(produced_on)')
         .order('adjusted_on', { ascending: false }).order('created_at', { ascending: false }).limit(20),
+      // returns that came back from each batch (via the delivery they were linked to)
+      supabase.from('returns').select('qty_returned, delivery_lines!inner(batch_id)').not('delivery_line_id', 'is', null),
     ])
-    if (b) setBatches(b.map(batch => ({ ...batch, consumed: delivered[batch.id] || 0, adjusted: adjusted[batch.id] || 0, available: batch.qty - (used[batch.id] || 0) })))
+    const returnedByBatch = {}
+    ;(rets || []).forEach(r => { const id = r.delivery_lines?.batch_id; if (id) returnedByBatch[id] = (returnedByBatch[id] || 0) + (r.qty_returned || 0) })
+    if (b) setBatches(b.map(batch => ({ ...batch, consumed: delivered[batch.id] || 0, adjusted: adjusted[batch.id] || 0, returned: returnedByBatch[batch.id] || 0, available: batch.qty - (used[batch.id] || 0) })))
     if (s) setSkus(s)
     setAdjustments(adj || [])
   }
@@ -128,12 +134,16 @@ export default function ProductionScreen() {
   }
 
   const activeBatches = batches.filter(b => daysLeft(b.expires_on) > 0)
-  // Batches (by production date) and adjustments (by adjustment date) in one list, newest first
-  const timeline = [
-    ...batches.map(b => ({ kind: 'batch', id: b.id, date: b.produced_on, created: b.created_at || '', b })),
-    ...adjustments.map(a => ({ kind: 'adj', id: a.id, date: a.adjusted_on, created: a.created_at || '', a })),
-  ].sort((x, y) => y.date.localeCompare(x.date) || y.created.localeCompare(x.created))
-  const dayHeader = ymd => { const [y, m, d] = ymd.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) }
+  // Batches only, newest production first. Adjustments and returns live inside each batch (tap to see).
+  const timeline = batches.map(b => ({ kind: 'batch', id: b.id, date: b.produced_on, created: b.created_at || '', b }))
+    .sort((x, y) => y.date.localeCompare(x.date) || y.created.localeCompare(x.created))
+  const usage = b => (
+    <>
+      {b.consumed > 0 && <span>{b.consumed} delivered</span>}
+      {b.returned > 0 && <span className="text-[var(--text-amber)]"> ↩ {b.returned}</span>}
+      {b.adjusted > 0 && <span className="text-[var(--text-amber)]">{b.consumed > 0 ? ' · ' : ''}{b.adjusted} adjusted out</span>}
+    </>
+  )
 
   const banner = prefill && (
     <div className="mx-4 mt-4 bg-[var(--bg-card)]/60 border border-[var(--accent)]/40 rounded-2xl p-4">
@@ -180,32 +190,10 @@ export default function ProductionScreen() {
           </div>
         )}
 
-        {/* One chronological log: production batches and stock adjustments, newest first */}
-        {timeline.map((e, i) => (
-          <div key={e.kind + e.id}>
-            {(i === 0 || timeline[i - 1].date !== e.date) && (
-              <div className="text-[var(--text-muted2)] text-xs font-medium uppercase tracking-wide mt-2 mb-1.5">{dayHeader(e.date)}</div>
-            )}
-            {e.kind === 'adj' ? (
-              <div className="bg-[var(--bg-card)] rounded-xl px-4 py-3 border-l-2 border-[var(--text-amber)]">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[var(--text-primary)] text-sm font-medium flex items-center gap-1.5">
-                      <PackageMinus size={14} className="text-[var(--text-amber)]" /> −{e.a.qty} {e.a.skus?.name}
-                    </div>
-                    <div className="text-[var(--text-muted2)] text-xs mt-0.5">
-                      <span className="text-[var(--text-amber)]">{reasonLabel(e.a.reason)}</span>
-                      {e.a.production_batches?.produced_on && ` · from batch ${e.a.production_batches.produced_on}`}
-                      {e.a.notes && ` · ${e.a.notes}`}
-                    </div>
-                  </div>
-                  <button onClick={() => undoAdjustment(e.a.id)} disabled={undoingId === e.a.id}
-                    className="text-[var(--text-muted2)] hover:text-red-400 text-xs shrink-0">
-                    {undoingId === e.a.id ? '...' : 'Undo'}
-                  </button>
-                </div>
-              </div>
-            ) : daysLeft(e.b.expires_on) > 0 ? (() => { const b = e.b; return (
+        {/* Production log: batches newest first; tap a batch for where it went */}
+        {timeline.map(e => (
+          <div key={e.kind + e.id} onClick={() => setSummaryBatch(e.b)} role="button" className="cursor-pointer">
+            {daysLeft(e.b.expires_on) > 0 ? (() => { const b = e.b; return (
           <div key={b.id} className="bg-[var(--bg-card)] rounded-xl p-4">
             <div className="flex items-start justify-between">
               <div className="flex-1 min-w-0">
@@ -214,14 +202,10 @@ export default function ProductionScreen() {
                   {b.available} available <span className="text-[var(--text-faint)]">/ {b.qty} produced</span> · {b.produced_on}
                 </div>
                 {(b.consumed > 0 || b.adjusted > 0) && (
-                  <div className="text-[var(--text-muted2)] text-xs mt-0.5">
-                    {b.consumed > 0 && `${b.consumed} delivered`}
-                    {b.consumed > 0 && b.adjusted > 0 && ' · '}
-                    {b.adjusted > 0 && <span className="text-[var(--text-amber)]">{b.adjusted} adjusted out</span>}
-                  </div>
+                  <div className="text-[var(--text-muted2)] text-xs mt-0.5">{usage(b)}</div>
                 )}
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0" onClick={ev => ev.stopPropagation()}>
                 <ExpiryBadge days={daysLeft(b.expires_on)} />
                 {b.available > 0 && (
                   <button onClick={() => setAdjustBatch({ id: b.id, sku_id: b.sku_id })} title="Adjust stock" className="text-[var(--text-muted2)] hover:text-[var(--text-amber)]">
@@ -242,7 +226,8 @@ export default function ProductionScreen() {
                 <div className="flex items-start justify-between">
                   <div>
                     <div className="text-[var(--text-secondary)] font-medium">{e.b.skus?.name}</div>
-                    <div className="text-[var(--text-muted2)] text-sm mt-0.5">{e.b.qty} produced · {e.b.consumed} delivered{e.b.adjusted ? ` · ${e.b.adjusted} adjusted` : ''}</div>
+                    <div className="text-[var(--text-muted2)] text-sm mt-0.5">{e.b.qty} produced · {e.b.produced_on}</div>
+                    <div className="text-[var(--text-muted2)] text-xs mt-0.5">{usage(e.b)}</div>
                   </div>
                   <ExpiryBadge days={daysLeft(e.b.expires_on)} />
                 </div>
@@ -271,6 +256,7 @@ export default function ProductionScreen() {
           </div>
         )}
 
+        {summaryBatch && <BatchSummaryModal batch={summaryBatch} onClose={() => setSummaryBatch(null)} onChanged={load} />}
         {adjustBatch && <StockAdjustModal batch={adjustBatch} onClose={() => setAdjustBatch(null)} onSaved={load} />}
 
       </div>
