@@ -101,6 +101,8 @@ export default function ProductionScreen() {
     await load()
   }
 
+  function setField(k, v) { setForm(f => ({ ...f, [k]: v })) }
+
   async function saveBatch() {
     if (!form.sku_id || !form.qty) return
     setSaving(true)
