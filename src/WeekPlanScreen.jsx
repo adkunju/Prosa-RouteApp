@@ -1036,7 +1036,8 @@ export default function WeekPlanScreen() {
                       <button onClick={() => toggleLock(s.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
                         {locked[s.store_id] ? <Lock size={14} className="text-[var(--text-gold)]" /> : <Unlock size={14} />}
                       </button>
-                      <span className="text-[var(--text-primary)] text-sm font-medium flex-1 min-w-0 overflow-hidden whitespace-nowrap text-ellipsis">{s.name}</span>
+                      <button onClick={() => setHistoryFor({ storeId: s.store_id, storeName: s.name })}
+                        className="text-left text-[var(--text-primary)] text-sm font-medium flex-1 min-w-0 overflow-hidden whitespace-nowrap text-ellipsis hover:text-[var(--text-accent)]">{s.name}</button>
                       <select
                         value={assignment[s.store_id] ?? 0}
                         onChange={e => moveStore(s.store_id, Number(e.target.value))}

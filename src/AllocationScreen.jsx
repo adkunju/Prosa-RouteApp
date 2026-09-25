@@ -316,7 +316,7 @@ export default function AllocationScreen() {
                         row.recent_soldouts != null && `sold out ${row.recent_soldouts} of last 3${row.last_soldout ? ' (incl. latest)' : ''}`,
                       ].filter(Boolean).join(' · '),
                     })}
-                    className="text-[var(--text-primary)] text-sm font-medium truncate text-left underline decoration-dotted decoration-[var(--text-muted2)] underline-offset-4">
+                    className="text-[var(--text-primary)] text-sm font-medium truncate text-left hover:text-[var(--text-accent)]">
                     {row.store_name}
                   </button>
                   {row.pipeline_status === 'dormant' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[var(--text-gold)]/20 text-[var(--text-gold)] shrink-0">DORMANT</span>}

@@ -6,6 +6,7 @@ import PipelineTag from './PipelineTag'
 import { useGeolocation, haversineKm } from './useGeolocation'
 import { TrendingUp, TrendingDown, AlertTriangle, Package, Star, ClipboardList, ChevronLeft, ChevronRight } from 'lucide-react'
 import { CallLogModal, openFollowups } from './FollowupsCard'
+import { openStoreHistory } from './StoreHistoryModal'
 
 // Every delivery line with what was actually sold: delivered − returned (returns counted
 // against the delivery they came from). One rule for the Sales tile and the Sales popup.
@@ -98,7 +99,8 @@ function StoreCard({ s, phones, onChanged, position, lastCall, onOpenLog }) {
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[var(--text-primary)] text-sm font-medium truncate">{s.name}</span>
+              <button onClick={e => { e.stopPropagation(); openStoreHistory({ storeId: s.store_id, storeName: s.name }) }}
+                className="text-left text-[var(--text-primary)] text-sm font-medium truncate hover:text-[var(--text-accent)]">{s.name}</button>
               {s.is_pickup && <span className="text-[var(--text-muted2)] text-[10px] shrink-0">pickup</span>}
               <PipelineTag storeId={s.store_id}
                 status={s.pipeline_status || 'prospect'}

@@ -5,6 +5,7 @@ import { syncMatrix } from './matrixUtils'
 import { startWaTemplateLoader, loadWaContext, setStoreStatus } from './waTemplates'
 import CallFollowupPrompt from './CallFollowupPrompt'
 import ConfirmHost from './ConfirmDialog'
+import { StoreHistoryHost } from './StoreHistoryModal'
 import DashboardScreen from './DashboardScreen'
 import ForecastScreen from './ForecastScreen'
 import AllocationScreen from './AllocationScreen'
@@ -134,6 +135,7 @@ function Shell() {
     <div className="h-screen bg-[var(--bg-root)] flex flex-col relative">
       <CallFollowupPrompt />
       <ConfirmHost />
+      <StoreHistoryHost />
       <div className="shrink-0 px-4 flex items-center bg-[var(--bg-root)]"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 22px)', paddingBottom: '12px' }}>
         <img src="/logo.png" alt="Prosa" className="h-8 w-auto object-contain" />

@@ -1,15 +1,38 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
-import { X } from 'lucide-react'
+import { X, Navigation } from 'lucide-react'
 
 const fmt = ymd => { const [y, m, d] = ymd.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) }
 const short = n => (n || 'Item').replace(/^Prosa\s+/i, '')
 
 // Store history grouped by product: totals on top, then a one-line-per-visit timeline
 // (last 90 days). Returns are shown on the visit they were picked up.
+// Open the history popup from anywhere: openStoreHistory({ storeId, storeName, summary? })
+let opener = null
+export function openStoreHistory(opts) { opener?.(opts) }
+export function StoreHistoryHost() {
+  const [open, setOpen] = useState(null)
+  useEffect(() => { opener = setOpen; return () => { opener = null } }, [])
+  return open ? <StoreHistoryModal {...open} onClose={() => setOpen(null)} /> : null
+}
+
+// Google Maps directions to the store (exact shop when we have its Google place)
+function directionsUrl(st) {
+  if (!st) return null
+  const base = 'https://www.google.com/maps/dir/?api=1&travelmode=driving'
+  if (st.lat != null && st.lng != null)
+    return `${base}&destination=${st.lat},${st.lng}${st.place_id ? `&destination_place_id=${st.place_id}` : ''}`
+  return `${base}&destination=${encodeURIComponent(st.name || '')}`
+}
+
 export default function StoreHistoryModal({ storeId, storeName, summary, onClose }) {
   const [skus, setSkus] = useState(null)
+  const [store, setStore] = useState(null)
+  useEffect(() => {
+    supabase.from('stores').select('name, lat, lng, place_id').eq('id', storeId).maybeSingle().then(({ data }) => setStore(data))
+  }, [storeId])
+  const dirUrl = directionsUrl(store)
 
   useEffect(() => { (async () => {
     const since = new Date(); since.setDate(since.getDate() - 90)
@@ -50,7 +73,15 @@ export default function StoreHistoryModal({ storeId, storeName, summary, onClose
             <div className="text-[var(--text-muted2)] text-xs">Last 90 days</div>
             {summary && <div className="text-[var(--text-secondary)] text-xs mt-0.5">{summary}</div>}
           </div>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
+          <div className="flex items-center gap-2 shrink-0">
+            {dirUrl && (
+              <a href={dirUrl} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1.5 bg-[var(--accent)]/15 text-[var(--accent)] text-xs font-semibold rounded-full px-3 py-1.5">
+                <Navigation size={13} /> Directions
+              </a>
+            )}
+            <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-5">
           {skus === null && <p className="text-[var(--text-muted2)] text-sm">Loading...</p>}

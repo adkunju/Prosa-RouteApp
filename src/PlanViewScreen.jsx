@@ -9,6 +9,7 @@ import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 import ProspectVisitModal from './ProspectVisitModal'
+import { openStoreHistory } from './StoreHistoryModal'
 import { useSettings } from './useSettings'
 import { computeProposedQty } from './forecastMath'
 
@@ -1320,7 +1321,7 @@ export default function PlanViewScreen() {
                     <button onClick={() => toggleLock(stop.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
                       {locked[stop.store_id] ? <Lock size={13} className="text-[var(--text-gold)]" /> : <Unlock size={13} />}
                     </button>
-                    <a href={stop.stores?.place_id ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.stores.name || "")}&query_place_id=${stop.stores.place_id}` : (stop.stores?.lat && stop.stores?.lng) ? `https://www.google.com/maps/search/?api=1&query=${stop.stores.lat},${stop.stores.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.stores?.name || '')}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} className="text-[var(--text-primary)] text-sm font-medium truncate hover:text-[var(--text-accent)] hover:underline">{stop.stores?.name}</a>
+                    <button onClick={e => { e.stopPropagation(); openStoreHistory({ storeId: stop.store_id, storeName: stop.stores?.name }) }} onPointerDown={e => e.stopPropagation()} className="text-left text-[var(--text-primary)] text-sm font-medium truncate hover:text-[var(--text-accent)]">{stop.stores?.name}</button>
                     {stop.stores?.pipeline_status && stop.stores.pipeline_status !== 'onboard' && (
                       <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 bg-[var(--accent)]/10 text-[var(--accent)]">
                         {stop.stores.pipeline_status}
@@ -1513,7 +1514,7 @@ export default function PlanViewScreen() {
       {activeCompleteStop && (
         <div className="absolute inset-0 bg-[var(--bg-root)]/70 backdrop-blur-2xl backdrop-saturate-150 flex flex-col">
           <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0 bg-[var(--bg-card)]/40 backdrop-blur-xl">
-            <h2 className="text-[var(--text-primary)] font-semibold"><a href={activeCompleteStop.stores?.place_id ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(activeCompleteStop.stores.name || "")}&query_place_id=${activeCompleteStop.stores.place_id}` : (activeCompleteStop.stores?.lat && activeCompleteStop.stores?.lng) ? `https://www.google.com/maps/search/?api=1&query=${activeCompleteStop.stores.lat},${activeCompleteStop.stores.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(activeCompleteStop.stores?.name || '')}`} target="_blank" rel="noopener noreferrer" className="hover:text-[var(--text-accent)] hover:underline">{activeCompleteStop.stores?.name}</a></h2>
+            <h2 className="text-[var(--text-primary)] font-semibold"><button onClick={() => openStoreHistory({ storeId: activeCompleteStop.store_id, storeName: activeCompleteStop.stores?.name })} className="text-left hover:text-[var(--text-accent)]">{activeCompleteStop.stores?.name}</button></h2>
             <button onClick={() => setActiveCompleteStop(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
           </div>
           <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">

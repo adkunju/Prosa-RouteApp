@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { TrendingUp, AlertTriangle, Clock } from 'lucide-react'
+import { openStoreHistory } from './StoreHistoryModal'
 
 // Whole calendar days from today (local) to a YYYY-MM-DD date
 function daysUntil(dateStr) {
@@ -143,7 +144,8 @@ export default function ForecastScreen() {
             <div className="flex items-start justify-between mb-2">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1">
-                  <span className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</span>
+                  <button onClick={e => { e.stopPropagation(); openStoreHistory({ storeId: row.store_id, storeName: row.store_name }) }}
+                    className="text-left text-[var(--text-primary)] text-sm font-medium truncate hover:text-[var(--text-accent)]">{row.store_name}</button>
                   <ContactButtons phone={phones[row.store_id]} storeId={row.store_id} storeName={row.store_name} status={row.pipeline_status} />
                 </div>
                 <div className="text-[var(--text-muted)] text-xs mt-0.5">
