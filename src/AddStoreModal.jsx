@@ -91,8 +91,18 @@ export default function AddStoreModal({ onClose, onSaved }) {
     if (!name.trim()) return
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setSaving(false); alert('Not connected — store was NOT saved. Try again.'); return }
+    // Don't create a second copy of a shop that's already saved (active or removed)
+    if (placeId) {
+      const { data: existing } = await supabase.from('stores').select('name, is_active').eq('place_id', placeId).limit(1)
+      if (existing?.length) {
+        setSaving(false)
+        alert(`"${existing[0].name}" is already saved${existing[0].is_active ? '' : ' (it was removed earlier — ask to restore it)'}.`)
+        return
+      }
+    }
     const weekdayDescriptions = DAYS.map(d => `${d}: ${hours[d]?.trim() || 'Unavailable'}`)
-    const { data: newStore } = await supabase.from('stores').insert({
+    const { data: newStore, error: insErr } = await supabase.from('stores').insert({
       user_id: user.id,
       name: name.trim(),
       address,
@@ -105,6 +115,7 @@ export default function AddStoreModal({ onClose, onSaved }) {
       is_pickup: isPickup,
       exclude_from_forecast: !inForecast,
     }).select('id, name').single()
+    if (insErr || !newStore) { setSaving(false); alert('Store was NOT saved: ' + (insErr?.message || 'unknown error')); return }
 
     if (newStore && phone) {
       await supabase.from('store_contacts').insert({

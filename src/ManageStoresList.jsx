@@ -92,7 +92,17 @@ export default function ManageStoresList() {
     setSaving(true)
     const { place, placeId } = selectedPlace
     const { data: { user } } = await supabase.auth.getUser()
-    const { data: newStore } = await supabase.from('stores').insert({
+    if (!user) { setSaving(false); alert('Not connected — store was NOT saved. Try again.'); return }
+    // Don't create a second copy of a shop that's already saved (active or removed)
+    if (placeId) {
+      const { data: existing } = await supabase.from('stores').select('name, is_active').eq('place_id', placeId).limit(1)
+      if (existing?.length) {
+        setSaving(false)
+        alert(`"${existing[0].name}" is already saved${existing[0].is_active ? '' : ' (it was removed earlier — ask to restore it)'}.`)
+        return
+      }
+    }
+    const { data: newStore, error: insErr } = await supabase.from('stores').insert({
       user_id: user.id,
       name: place.displayName?.text || searchQuery,
       address: place.formattedAddress || '',
@@ -103,6 +113,7 @@ export default function ManageStoresList() {
       opening_hours: place.currentOpeningHours || null,
       service_minutes: serviceMinutes,
     }).select('id').single()
+    if (insErr || !newStore) { setSaving(false); alert('Store was NOT saved: ' + (insErr?.message || 'unknown error')); return }
 
     if (newStore && place.internationalPhoneNumber) {
       await supabase.from('store_contacts').insert({

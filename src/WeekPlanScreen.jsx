@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import { fetchMatrix } from './matrixUtils'
-import { fetchBatchUsage } from './stockUtils'
+import { fetchBatchUsage, notifyStockChanged } from './stockUtils'
 import StockAdjustModal from './StockAdjustModal'
 import { useSettings } from './useSettings'
 import { fuzzyMatch } from './fuzzy'
@@ -96,14 +96,21 @@ export default function WeekPlanScreen() {
   const [availableStock, setAvailableStock] = useState({}) // sku_id -> available pcs
   const [spareStock, setSpareStock] = useState({}) // sku_id -> spare pcs
   const [showAdjust, setShowAdjust] = useState(false)
+  const [savingProd, setSavingProd] = useState(false)
+  const [prodError, setProdError] = useState('')
   const [historyFor, setHistoryFor] = useState(null)
   const [matrixMeters, setMatrixMeters] = useState({})
   const [depotId, setDepotId] = useState(null)
 
   const loadRef = useRef(null)
+  const loadSeqRef = useRef(0) // ignore results from an older load that finishes after a newer one
+  const [loadError, setLoadError] = useState('')
   async function load() {
+    const myLoad = ++loadSeqRef.current
     setLoading(true)
+    setLoadError('')
     const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setLoading(false); setLoadError('Could not reach the server — check your connection and reopen this tab.'); return }
 
     const todayStr = localToday()
     const localDateStr = todayStr
@@ -153,7 +160,9 @@ export default function WeekPlanScreen() {
     }
 
     setAllStores((stores || []).filter(s => !s.is_depot && !s.is_pickup))
-    const depot = stores.find(s => s.is_depot)
+    if (myLoad !== loadSeqRef.current) return // a newer load has started
+    const depot = (stores || []).find(s => s.is_depot)
+    if (!depot) { setLoading(false); setLoadError('No depot found — mark your depot store in Settings → Manage Stores.'); return }
     const matrixMap = {}
     matrix.forEach(m => { matrixMap[`${m.from_store_id}_${m.to_store_id}`] = m.seconds })
     const metersMap = {}
@@ -359,7 +368,9 @@ export default function WeekPlanScreen() {
       try {
         const { dates, assignment: savedAssign, dueStores: savedStores, pickupDue: savedPickup, availableStock: savedStock, spareStock: savedSpare, locked: savedLocked, unscheduled: savedUnscheduled, qtyOverrides: savedQtyOverrides } = JSON.parse(cached)
         if (dates === planDates.join(',')) {
-          setDueStores((savedStores || []).filter(s => s.skuReqs.some(r => r.qty > 0)))
+          // keep stores added by hand (their quantities live in qtyOverrides, or they're visit-only)
+          setDueStores((savedStores || []).filter(s => s.manual || s.skuReqs.some(r => r.qty > 0) ||
+            s.skuReqs.some(r => Number((savedQtyOverrides || {})[`${s.store_id}-${r.sku_id}`]) > 0)))
           setUnscheduled(savedUnscheduled || [])
           setQtyOverrides(savedQtyOverrides || {})
           setSpareStock(savedSpare || {})
@@ -433,11 +444,12 @@ export default function WeekPlanScreen() {
   const byDay = useMemo(() => {
     const grouped = Array.from({ length: NUM_DAYS }, () => [])
     dueStores.forEach(s => {
-      const day = assignment[s.store_id] ?? 0
+      // clamp: the number of days can change (weekday ticked/unticked) before assignments are recomputed
+      const day = Math.min(Math.max(0, assignment[s.store_id] ?? 0), NUM_DAYS - 1)
       grouped[day].push(s)
     })
     return grouped
-  }, [dueStores, assignment])
+  }, [dueStores, assignment, NUM_DAYS])
 
   const leg = (a, b) => (a === b ? 0 : (matrixMap[`${a}_${b}`] ?? matrixMap[`${b}_${a}`] ?? 600))
 
@@ -793,6 +805,12 @@ export default function WeekPlanScreen() {
 
       <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-5">
         {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Computing assignments...</div>}
+        {!loading && loadError && (
+          <div className="text-center mt-12 text-sm text-red-400 px-6">
+            {loadError}
+            <button onClick={() => load()} className="block mx-auto mt-3 text-[var(--accent)] font-medium">Try again</button>
+          </div>
+        )}
 
         {pendingProduction && (
           <div className="bg-[var(--text-gold)]/10 border border-[var(--text-gold)]/40 rounded-2xl p-4">
@@ -923,8 +941,8 @@ export default function WeekPlanScreen() {
         })()}
 
         {!loading && Array.from({ length: NUM_DAYS }).map((_, day) => {
-          const stops = byDay[day]
-          const mins = dayMinutes[day]
+          const stops = byDay[day] || []
+          const mins = dayMinutes[day] || 0
           const overloaded = mins > DAILY_BUDGET_MIN
           return (
             <div key={day}>
@@ -1052,6 +1070,7 @@ export default function WeekPlanScreen() {
                 </div>
               ))}
             </div>
+            {prodError && <p className="text-red-400 text-xs mb-2">{prodError}</p>}
             <div className="flex gap-3">
               <button onClick={() => {
                   sessionStorage.removeItem('prosa_production_prefill')
@@ -1061,8 +1080,11 @@ export default function WeekPlanScreen() {
                 className="flex-1 py-2.5 rounded-xl border border-[var(--bg-input)] text-[var(--text-secondary)] text-sm">
                 Dismiss
               </button>
-              <button onClick={async () => {
+              <button disabled={savingProd} onClick={async () => {
+                  if (savingProd) return
+                  setSavingProd(true); setProdError('')
                   const { data: { user } } = await supabase.auth.getUser()
+                  if (!user) { setSavingProd(false); setProdError('Not connected — try again'); return }
                   const today = pendingProduction.date
                   const rows = pendingProduction.totals.map(t => ({
                     produced_on: today,
@@ -1070,14 +1092,17 @@ export default function WeekPlanScreen() {
                     qty: prodQtys[t.sku_name] ?? t.qty,
                     user_id: user.id,
                   }))
-                  await supabase.from('production_batches').insert(rows)
+                  const { error } = await supabase.from('production_batches').insert(rows.filter(r => Number(r.qty) > 0))
+                  setSavingProd(false)
+                  if (error) { setProdError('Production was NOT saved: ' + error.message); return }
+                  notifyStockChanged()
                   sessionStorage.removeItem('prosa_production_prefill')
                   setPendingProduction(null)
                   setShowProductionConfirm(false)
                   window.dispatchEvent(new CustomEvent('prosa:production_confirmed'))
                 }}
-                className="flex-1 py-2.5 rounded-xl bg-[var(--text-gold)] text-white text-sm font-semibold">
-                Save batch
+                className="flex-1 py-2.5 rounded-xl bg-[var(--text-gold)] disabled:opacity-50 text-white text-sm font-semibold">
+                {savingProd ? 'Saving...' : 'Save batch'}
               </button>
             </div>
           </div>
@@ -1110,7 +1135,7 @@ export default function WeekPlanScreen() {
                       onChange={e => {
                         const day = Number(e.target.value)
                         if (isNaN(day) || e.target.value === '') return
-                        const storeToAdd = { ...s, skuReqs: s.skuReqs.map(r => ({ ...r, requested: r.requested ?? r.qty })) }
+                        const storeToAdd = { ...s, manual: true, skuReqs: s.skuReqs.map(r => ({ ...r, requested: r.requested ?? r.qty })) }
                         setDueStores(prev => [...prev, storeToAdd])
                         setAssignment(a => ({ ...a, [s.store_id]: day }))
                         setUnscheduled(prev => prev.filter(x => x.store_id !== s.store_id))
@@ -1295,6 +1320,7 @@ export default function WeekPlanScreen() {
                         .map(skuId => ({ sku_id: skuId, name: skuMap[skuId] || skuId, qty: 0, requested: 0 }))
                       const storeToAdd = {
                         ...selectedStore,
+                        manual: true,
                         skuReqs: [
                           ...selectedStore.skuReqs.map(r => ({ ...r, qty: 0, requested: 0 })),
                           ...extraSkuReqs

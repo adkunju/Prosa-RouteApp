@@ -104,8 +104,10 @@ export function syncMatrix({ full = false, refreshIds = [] } = {}) {
         ...await computeRows(user.id, stores, allIdx, need),  // everyone → new stores
       ]
     }
-    await upsertRows(rows)
-    return { added: rows.length, missing }
+    // A pair between two new stores comes out of both passes; one upsert can't touch a row twice
+    const unique = [...new Map(rows.map(r => [`${r.from_store_id}_${r.to_store_id}`, r])).values()]
+    await upsertRows(unique)
+    return { added: unique.length, missing }
   })()
   const p = running
   const clear = () => { if (running === p) running = null }

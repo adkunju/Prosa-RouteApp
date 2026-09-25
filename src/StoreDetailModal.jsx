@@ -32,6 +32,7 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
   })
   const [contacts, setContacts] = useState([])
   const [addingContact, setAddingContact] = useState(false)
+  const [confirmContactDel, setConfirmContactDel] = useState(null)
   const [newContactName, setNewContactName] = useState('')
   const [newContactPhone, setNewContactPhone] = useState('')
   const [savingDetail, setSavingDetail] = useState(false)
@@ -170,7 +171,8 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
       updates.lat = selectedPlace.place.location?.latitude ?? updates.lat
       updates.lng = selectedPlace.place.location?.longitude ?? updates.lng
     }
-    await supabase.from('stores').update(updates).eq('id', store.id)
+    const { error: saveErr } = await supabase.from('stores').update(updates).eq('id', store.id)
+    if (saveErr) { setSavingDetail(false); alert('Changes were NOT saved: ' + saveErr.message); return }
     // Moved pin or pickup toggled → travel times for this store must be recomputed
     const moved = Number(updates.lat) !== Number(store.lat) || Number(updates.lng) !== Number(store.lng)
     if (moved || !!updates.is_pickup !== !!store.is_pickup) {
@@ -190,24 +192,30 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
     window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
   }
 
+  // Two taps to delete; call history stays (it just loses the link to this person)
   async function deleteContact(id) {
-    await supabase.from('store_contacts').delete().eq('id', id)
+    if (confirmContactDel !== id) { setConfirmContactDel(id); setTimeout(() => setConfirmContactDel(c => (c === id ? null : c)), 3000); return }
+    setConfirmContactDel(null)
+    const { error } = await supabase.from('store_contacts').delete().eq('id', id)
+    if (error) alert('Could not delete contact: ' + error.message)
     await loadContacts()
     window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
   }
 
   // D = the contact who gets the WhatsApp delivery message; one per store, tap again to unset
   async function toggleDelivery(c) {
-    await supabase.from('store_contacts').update({ is_delivery: false }).eq('store_id', store.id).eq('is_delivery', true)
-    if (!c.is_delivery) await supabase.from('store_contacts').update({ is_delivery: true }).eq('id', c.id)
+    const { error: e1 } = await supabase.from('store_contacts').update({ is_delivery: false }).eq('store_id', store.id).eq('is_delivery', true)
+    const { error: e2 } = !e1 && !c.is_delivery ? await supabase.from('store_contacts').update({ is_delivery: true }).eq('id', c.id) : { error: null }
+    if (e1 || e2) alert('Could not update: ' + (e1 || e2).message)
     await loadContacts()
     window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
   }
 
   // Make one contact the store's main contact (listed first everywhere); tap again to unset
   async function togglePrimary(c) {
-    await supabase.from('store_contacts').update({ is_primary: false }).eq('store_id', store.id).eq('is_primary', true)
-    if (!c.is_primary) await supabase.from('store_contacts').update({ is_primary: true }).eq('id', c.id)
+    const { error: e1 } = await supabase.from('store_contacts').update({ is_primary: false }).eq('store_id', store.id).eq('is_primary', true)
+    const { error: e2 } = !e1 && !c.is_primary ? await supabase.from('store_contacts').update({ is_primary: true }).eq('id', c.id) : { error: null }
+    if (e1 || e2) alert('Could not update: ' + (e1 || e2).message)
     await loadContacts()
     window.dispatchEvent(new CustomEvent('prosa:contacts_changed'))
   }
@@ -363,8 +371,8 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
                     className={`p-1.5 ${c.is_primary ? 'text-[var(--text-gold)]' : 'text-[var(--text-muted2)] hover:text-[var(--text-gold)]'}`}>
                     <Star size={14} className={c.is_primary ? 'fill-current' : ''} />
                   </button>
-                  <button onClick={() => deleteContact(c.id)} className="text-[var(--text-muted2)] hover:text-red-400 p-1.5">
-                    <Trash2 size={13} />
+                  <button onClick={() => deleteContact(c.id)} className={`p-1.5 ${confirmContactDel === c.id ? 'text-red-400 text-[11px] font-medium' : 'text-[var(--text-muted2)] hover:text-red-400'}`}>
+                    {confirmContactDel === c.id ? 'Delete?' : <Trash2 size={13} />}
                   </button>
                 </div>
               </div>

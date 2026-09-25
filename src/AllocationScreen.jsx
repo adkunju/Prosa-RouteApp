@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
+import { notifyStockChanged } from './stockUtils'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { computeProposedQty } from './forecastMath'
 import { Package, CheckCircle, ChevronDown } from 'lucide-react'
@@ -8,6 +9,8 @@ const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+
 const today = () => localDate()
 
 export default function AllocationScreen() {
+  const [confirming, setConfirming] = useState(false)
+  const [confirmError, setConfirmError] = useState('')
   const [rows, setRows] = useState([])
   const [qtys, setQtys] = useState({})
   const [loading, setLoading] = useState(true)
@@ -384,20 +387,23 @@ export default function AllocationScreen() {
               <div className="text-[var(--text-muted2)] text-xs mt-2 pt-2 border-t border-[var(--bg-input)]/30">for {planDate}</div>
             </div>
             </div>
+            {confirmError && <p className="px-6 text-red-400 text-xs">{confirmError}</p>}
             <div className="p-6 pt-3 flex gap-3">
               <button onClick={() => setShowConfirm(false)}
                 className="flex-1 py-2.5 rounded-xl border border-[var(--bg-input)] text-[var(--text-secondary)] text-sm">
                 Edit
               </button>
-              <button onClick={async () => {
+              <button disabled={confirming} onClick={async () => {
+                  if (confirming) return
+                  setConfirming(true); setConfirmError('')
                   const { data: { user } } = await supabase.auth.getUser()
-                  const batchRows = totalsForConfirm.map(t => ({
+                  if (!user) { setConfirming(false); setConfirmError('Not connected — try again'); return }
+                  const batchRows = totalsForConfirm.filter(t => Number(t.qty) > 0).map(t => ({
                     produced_on: planDate,
                     sku_id: t.sku_id,
                     qty: t.qty,
                     user_id: user.id,
                   }))
-                  await supabase.from('production_batches').insert(batchRows)
                   const spareBatchRows = totalsForConfirm
                     .filter(t => (spareQtys[t.sku_name] || 0) > 0)
                     .map(t => ({
@@ -407,14 +413,18 @@ export default function AllocationScreen() {
                       user_id: user.id,
                       is_spare: true,
                     }))
-                  if (spareBatchRows.length) await supabase.from('production_batches').insert(spareBatchRows)
+                  // normal + spare batches in ONE request: all saved or none
+                  const { error } = await supabase.from('production_batches').insert([...batchRows, ...spareBatchRows])
+                  setConfirming(false)
+                  if (error) { setConfirmError('Production was NOT saved: ' + error.message); return }
+                  notifyStockChanged()
                   setSpareQtys({})
                   setShowConfirm(false)
                   window.dispatchEvent(new CustomEvent('prosa:production_confirmed'))
                   window.dispatchEvent(new CustomEvent('prosa:goto', { detail: { tab: 'schedule' } }))
                 }}
-                className="flex-1 py-2.5 rounded-xl bg-[var(--accent)] text-white text-sm font-semibold">
-                Confirm
+                className="flex-1 py-2.5 rounded-xl bg-[var(--accent)] disabled:opacity-50 text-white text-sm font-semibold">
+                {confirming ? 'Saving...' : 'Confirm'}
               </button>
             </div>
           </div>

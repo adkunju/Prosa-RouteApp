@@ -34,6 +34,8 @@ export default function ProductionScreen() {
   const [adjustments, setAdjustments] = useState([])
   const [undoingId, setUndoingId] = useState(null)
   const [summaryBatch, setSummaryBatch] = useState(null)
+  const [actionError, setActionError] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null)
 
   async function load() {
     const [{ data: b }, { data: s }, { used, delivered, adjusted }, { data: adj }, { data: rets }] = await Promise.all([
@@ -69,21 +71,24 @@ export default function ProductionScreen() {
 
   // Turn the allocation totals into one batch per SKU.
   async function createFromAllocation() {
-    if (!prefill) return
-    setCreating(true)
+    if (!prefill || creating) return
+    setCreating(true); setActionError('')
     const { data: { user } } = await supabase.auth.getUser()
+    // Look products up now (don't depend on the list having finished loading)
+    const { data: allSkus, error: skuErr } = await supabase.from('skus').select('id, name')
+    if (!user || skuErr) { setCreating(false); setActionError('Not connected — production was NOT saved. Try again.'); return }
+    const rows = [], missing = []
     for (const row of prefill.totals) {
-      const sku = skus.find(s => s.name === row.sku_name)
-      if (!sku) continue
-      await supabase.from('production_batches').insert({
-        user_id: user.id,
-        sku_id: sku.id,
-        qty: Number(row.qty),
-        produced_on: prefill.date,
-      })
+      const sku = (allSkus || []).find(x => x.id === row.sku_id || x.name === row.sku_name)
+      if (!sku) { missing.push(row.sku_name); continue }
+      if (Number(row.qty) > 0) rows.push({ user_id: user.id, sku_id: sku.id, qty: Number(row.qty), produced_on: prefill.date })
     }
+    if (missing.length) { setCreating(false); setActionError(`Product not found: ${missing.join(', ')} — nothing saved.`); return }
+    const { error } = await supabase.from('production_batches').insert(rows) // all or nothing
+    if (error) { setCreating(false); setActionError('Production was NOT saved: ' + error.message); return }
     sessionStorage.removeItem('prosa_production_prefill')
     setPrefill(null)
+    notifyStockChanged()
     window.dispatchEvent(new CustomEvent('prosa:production_confirmed'))
     const ret = sessionStorage.getItem('prosa_settings_return')
     if (ret) {
@@ -95,35 +100,50 @@ export default function ProductionScreen() {
     await load()
   }
 
-  function setField(k, v) { setForm(f => ({ ...f, [k]: v })) }
-
   async function saveBatch() {
     if (!form.sku_id || !form.qty) return
     setSaving(true)
     const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { setSaving(false); setActionError('Not connected — try again'); return }
     const { error } = await supabase.from('production_batches').insert({
       user_id: user.id,
       sku_id: form.sku_id,
       qty: Number(form.qty),
       produced_on: form.produced_on,
     })
-    if (!error) { await load(); resetForm() }
     setSaving(false)
+    if (error) { setActionError('Batch was NOT saved: ' + error.message); return }
+    notifyStockChanged()
+    await load(); resetForm()
   }
 
   async function saveEdit() {
     if (!editingBatch) return
-    await supabase.from('production_batches').update({
+    const orig = batches.find(x => x.id === editingBatch.id)
+    const used = (orig?.consumed || 0) + (orig?.adjusted || 0)
+    if (Number(editingBatch.qty) < used) {
+      setActionError(`Can't set below ${used} — that many are already delivered or adjusted from this batch.`); return
+    }
+    const { error } = await supabase.from('production_batches').update({
       qty: Number(editingBatch.qty),
       produced_on: editingBatch.produced_on,
     }).eq('id', editingBatch.id)
-    setEditingBatch(null)
+    if (error) { setActionError('Edit was NOT saved: ' + error.message); return }
+    setEditingBatch(null); setActionError('')
+    notifyStockChanged()
     await load()
   }
 
+  // Two taps to delete. A batch that already has deliveries can't be deleted (edit it instead).
   async function deleteBatch(id) {
+    const b = batches.find(x => x.id === id)
+    if (b?.consumed > 0) { setActionError('This batch has deliveries — it can\'t be deleted. Edit the quantity instead.'); return }
+    if (confirmDeleteId !== id) { setConfirmDeleteId(id); setTimeout(() => setConfirmDeleteId(c => (c === id ? null : c)), 3000); return }
+    setConfirmDeleteId(null)
     setDeletingId(id)
-    await supabase.from('production_batches').delete().eq('id', id)
+    const { error } = await supabase.from('production_batches').delete().eq('id', id)
+    if (error) setActionError('Delete failed: ' + error.message)
+    else notifyStockChanged()
     await load()
     setDeletingId(null)
   }
@@ -169,6 +189,9 @@ export default function ProductionScreen() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
       {banner}
+      {actionError && (
+        <div onClick={() => setActionError('')} className="mx-4 mt-3 bg-red-900/40 border border-red-500/40 text-red-200 text-xs rounded-xl px-3 py-2">{actionError}</div>
+      )}
       {/* Header */}
       <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
         <span className="text-[var(--text-muted)] text-sm">{activeBatches.length} active batch{activeBatches.length !== 1 ? 'es' : ''}</span>
@@ -215,8 +238,9 @@ export default function ProductionScreen() {
                 <button onClick={() => setEditingBatch({ id: b.id, qty: b.qty, produced_on: b.produced_on })} className="text-[var(--text-muted2)] hover:text-[var(--text-accent)]">
                   <Pencil size={14} />
                 </button>
-                <button onClick={() => deleteBatch(b.id)} disabled={deletingId === b.id} className="text-[var(--text-muted2)] hover:text-red-400">
-                  <Trash2 size={14} />
+                <button onClick={() => deleteBatch(b.id)} disabled={deletingId === b.id}
+                  className={confirmDeleteId === b.id ? 'text-red-400 text-xs font-medium' : 'text-[var(--text-muted2)] hover:text-red-400'}>
+                  {confirmDeleteId === b.id ? 'Tap to delete' : <Trash2 size={14} />}
                 </button>
               </div>
             </div>

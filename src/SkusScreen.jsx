@@ -48,15 +48,18 @@ export default function SkusScreen() {
       unit_cost: form.unit_cost !== '' ? Number(form.unit_cost) : null,
       unit_price: form.unit_price !== '' ? Number(form.unit_price) : null,
     }
+    let error
     if (editingId) {
-      await supabase.from('skus').update(payload).eq('id', editingId)
+      ({ error } = await supabase.from('skus').update(payload).eq('id', editingId))
     } else {
       const { data: { user } } = await supabase.auth.getUser()
-      await supabase.from('skus').insert({ user_id: user.id, ...payload })
+      if (!user) { setSaving(false); alert('Not connected — try again'); return }
+      ({ error } = await supabase.from('skus').insert({ user_id: user.id, ...payload }))
     }
+    setSaving(false)
+    if (error) { alert('Product was NOT saved: ' + error.message); return } // keep the form open
     await loadSkus()
     resetForm()
-    setSaving(false)
   }
 
   function resetForm() {

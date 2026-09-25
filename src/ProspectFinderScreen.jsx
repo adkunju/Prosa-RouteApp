@@ -239,6 +239,13 @@ export default function ProspectFinderScreen() {
     setAdding(p.place_id)
     try {
       const { data: { user } } = await supabase.auth.getUser()
+      // already saved (even if removed earlier)? don't create a duplicate
+      const { data: existing } = await supabase.from('stores').select('name, is_active').eq('place_id', p.place_id).limit(1)
+      if (existing?.length) {
+        setExistingPlaceIds(prev => new Set([...prev, p.place_id]))
+        setResults(rs => rs.map(r => r.place_id === p.place_id ? { ...r, existing: true } : r))
+        throw new Error(`"${existing[0].name}" is already saved${existing[0].is_active ? '' : ' (removed earlier)'}`)
+      }
       const { error: insErr } = await supabase.from('stores').insert({
         user_id: user.id,
         name: p.name,
