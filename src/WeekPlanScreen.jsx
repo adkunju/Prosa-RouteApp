@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import { fetchMatrix } from './matrixUtils'
-import { fetchBatchUsage, notifyStockChanged } from './stockUtils'
+import { fetchBatchUsage, notifyStockChanged, confirmNoDuplicateBatch } from './stockUtils'
 import StockAdjustModal from './StockAdjustModal'
 import { useSettings } from './useSettings'
 import { fuzzyMatch } from './fuzzy'
@@ -923,30 +923,6 @@ export default function WeekPlanScreen() {
           </div>
         )}
 
-        {pendingProduction && (
-          <div className="bg-[var(--text-gold)]/10 border border-[var(--text-gold)]/40 rounded-2xl p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-[var(--text-primary)] text-sm font-semibold mb-1">⚠ Production not confirmed</div>
-                <div className="text-[var(--text-muted2)] text-xs">
-                  {pendingProduction.totals.map(t => `${t.sku_name}: ${t.qty} pcs`).join(' · ')} · for {pendingProduction.date}
-                </div>
-              </div>
-              <div className="flex gap-2 shrink-0">
-                <button
-                  onClick={() => setPendingProduction(null)}
-                  className="text-[var(--text-muted2)] text-xs px-2 py-2 hover:text-[var(--text-primary)]">
-                  Dismiss
-                </button>
-                <button
-                  onClick={() => setShowProductionConfirm(true)}
-                  className="bg-[var(--text-gold)] text-white text-xs font-semibold rounded-xl px-3 py-2 hover:opacity-90">
-                  Confirm
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
 
         {!loading && unscheduled.length > 0 && (
           <div className="bg-red-900/20 border border-red-700/30 rounded-2xl p-4">
@@ -1157,68 +1133,6 @@ export default function WeekPlanScreen() {
             {saved ? <><CheckCircle size={18} /> Saved!</> : saving ? <><Loader2 size={16} className="animate-spin" /> Saving...</> : <>{hasUnsavedChanges && <AlertTriangle size={14} className="text-[var(--text-gold)]" />} Save Week Plan</>}
           </button>
         </div>
-      )}
-    {showProductionConfirm && pendingProduction && createPortal(
-        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col items-center justify-center p-6"
-          onClick={() => setShowProductionConfirm(false)}>
-          <div onClick={e => e.stopPropagation()}
-            className="bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
-            <div className="text-[var(--text-primary)] text-base font-semibold mb-1">Confirm production</div>
-            <div className="text-[var(--text-muted2)] text-xs mb-4">Enter the actual quantities produced for {pendingProduction.date}.</div>
-            <div className="flex flex-col gap-3 mb-5">
-              {pendingProduction.totals.map(t => (
-                <div key={t.sku_name} className="flex items-center justify-between gap-3">
-                  <span className="text-[var(--text-secondary)] text-sm">{t.sku_name}</span>
-                  <div className="flex items-center gap-2 bg-[var(--bg-input)]/40 rounded-xl px-3 py-1.5">
-                    <button onClick={() => setProdQtys(q => ({ ...q, [t.sku_name]: Math.max(0, (q[t.sku_name] ?? t.qty) - 1) }))}
-                      className="text-[var(--text-muted2)] hover:text-white w-5 h-5 flex items-center justify-center">−</button>
-                    <span className="text-[var(--text-primary)] font-semibold w-8 text-center text-sm">
-                      {prodQtys[t.sku_name] ?? t.qty}
-                    </span>
-                    <button onClick={() => setProdQtys(q => ({ ...q, [t.sku_name]: (q[t.sku_name] ?? t.qty) + 1 }))}
-                      className="text-[var(--text-muted2)] hover:text-white w-5 h-5 flex items-center justify-center">+</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {prodError && <p className="text-red-400 text-xs mb-2">{prodError}</p>}
-            <div className="flex gap-3">
-              <button onClick={() => {
-                  sessionStorage.removeItem('prosa_production_prefill')
-                  setPendingProduction(null)
-                  setShowProductionConfirm(false)
-                }}
-                className="flex-1 py-2.5 rounded-xl border border-[var(--bg-input)] text-[var(--text-secondary)] text-sm">
-                Dismiss
-              </button>
-              <button disabled={savingProd} onClick={async () => {
-                  if (savingProd) return
-                  setSavingProd(true); setProdError('')
-                  const { data: { user } } = await supabase.auth.getUser()
-                  if (!user) { setSavingProd(false); setProdError('Not connected — try again'); return }
-                  const today = pendingProduction.date
-                  const rows = pendingProduction.totals.map(t => ({
-                    produced_on: today,
-                    sku_id: t.sku_id,
-                    qty: prodQtys[t.sku_name] ?? t.qty,
-                    user_id: user.id,
-                  }))
-                  const { error } = await supabase.from('production_batches').insert(rows.filter(r => Number(r.qty) > 0))
-                  setSavingProd(false)
-                  if (error) { setProdError('Production was NOT saved: ' + error.message); return }
-                  notifyStockChanged()
-                  sessionStorage.removeItem('prosa_production_prefill')
-                  setPendingProduction(null)
-                  setShowProductionConfirm(false)
-                  window.dispatchEvent(new CustomEvent('prosa:production_confirmed'))
-                }}
-                className="flex-1 py-2.5 rounded-xl bg-[var(--text-gold)] disabled:opacity-50 text-white text-sm font-semibold">
-                {savingProd ? 'Saving...' : 'Save batch'}
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
       )}
 
     {showSkipped && createPortal(

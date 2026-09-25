@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { notifyStockChanged } from './stockUtils'
+import { notifyStockChanged, confirmNoDuplicateBatch } from './stockUtils'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { computeProposedQty } from './forecastMath'
 import { Package, CheckCircle, ChevronDown } from 'lucide-react'
@@ -413,6 +413,7 @@ export default function AllocationScreen() {
                       user_id: user.id,
                       is_spare: true,
                     }))
+                  if (!(await confirmNoDuplicateBatch(planDate, [...batchRows, ...spareBatchRows]))) { setConfirming(false); return }
                   // normal + spare batches in ONE request: all saved or none
                   const { error } = await supabase.from('production_batches').insert([...batchRows, ...spareBatchRows])
                   setConfirming(false)
