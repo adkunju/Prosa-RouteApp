@@ -20,6 +20,14 @@ function dayLabel(iso, { short = false } = {}) {
   return `${wd} ${d.getDate()} ${d.toLocaleDateString('en-GB', { month: 'short' })}`
 }
 
+// Stores added to the Schedule by hand. Kept on the phone (not just this tab) so they
+// survive tab switches AND recomputes (deliveries/stock changes rebuild the plan from the
+// forecast, which doesn't know about them). { [store_id]: { date, store, overrides } }
+const MANUAL_KEY = 'prosa_schedule_manual'
+function readManual() { try { return JSON.parse(localStorage.getItem(MANUAL_KEY) || '{}') } catch { return {} } }
+function writeManual(m) { try { localStorage.setItem(MANUAL_KEY, JSON.stringify(m)) } catch { /* ignore */ } }
+function updateManual(fn) { const m = readManual(); fn(m); writeManual(m) }
+
 function dateForOffset(offset) {
   const d = new Date()
   d.setDate(d.getDate() + offset)
@@ -84,7 +92,7 @@ export default function WeekPlanScreen() {
   const [stalePlans, setStalePlans] = useState([])
   const [pendingProduction, setPendingProduction] = useState(null)
   const [showSkipped, setShowSkipped] = useState(false)
-  const [cacheRestored, setCacheRestored] = useState(false)
+  const [cacheRestored, setCacheRestored] = useState(false) // kept for compatibility; no longer blocks saving
   const [showProductionConfirm, setShowProductionConfirm] = useState(false)
   const [showAddStore, setShowAddStore] = useState(false)
   const [addStoreQuery, setAddStoreQuery] = useState('')
@@ -97,13 +105,15 @@ export default function WeekPlanScreen() {
   const [spareStock, setSpareStock] = useState({}) // sku_id -> spare pcs
   const [showAdjust, setShowAdjust] = useState(false)
   const [savingProd, setSavingProd] = useState(false)
+  const [confirmReset, setConfirmReset] = useState(false)
   const [prodError, setProdError] = useState('')
   const [historyFor, setHistoryFor] = useState(null)
   const [matrixMeters, setMatrixMeters] = useState({})
   const [depotId, setDepotId] = useState(null)
 
   const loadRef = useRef(null)
-  const loadSeqRef = useRef(0) // ignore results from an older load that finishes after a newer one
+  const loadSeqRef = useRef(0)
+  const overridesRef = useRef({}) // ignore results from an older load that finishes after a newer one
   const [loadError, setLoadError] = useState('')
   async function load() {
     const myLoad = ++loadSeqRef.current
@@ -216,6 +226,26 @@ export default function WeekPlanScreen() {
     // Ration available stock across ALL due stores using total stock across all days
     // Use cumulative stock (today + future batches) for allocation planning
     const runningStock = { ...stockBySku }
+    // D2C is hand-set and has top priority: reserve it before any store is rationed
+    pickupStores.filter(p => p.is_d2c).forEach(p => {
+      p.skuReqs = p.skuReqs.map(r => {
+        const q = Math.max(0, Number(overridesRef.current[`${p.store_id}-${r.sku_id}`] ?? r.qty) || 0)
+        runningStock[r.sku_id] = Math.max(0, (runningStock[r.sku_id] ?? 0) - q)
+        return { ...r, qty: q, requested: q }
+      })
+    })
+    // Stores added by hand come next: their entered quantities are reserved before forecast stores
+    const manualNow = readManual()
+    const manualIds = new Set(Object.entries(manualNow)
+      .filter(([, m]) => m?.date && m.date >= todayStr && planDates.includes(m.date)).map(([sid]) => sid))
+    manualIds.forEach(sid => {
+      Object.entries(manualNow[sid].overrides || {}).forEach(([key, q]) => {
+        const skuId = key.slice(sid.length + 1)
+        runningStock[skuId] = Math.max(0, (runningStock[skuId] ?? 0) - (Number(q) || 0))
+      })
+    })
+    // a hand-added store that's also due by forecast is handled once, as hand-added
+    for (let i = stores_due.length - 1; i >= 0; i--) if (manualIds.has(stores_due[i].store_id)) stores_due.splice(i, 1)
     stores_due.forEach(s => {
       s.skuReqs = s.skuReqs.map(r => {
         const avail = runningStock[r.sku_id] ?? 0
@@ -226,7 +256,7 @@ export default function WeekPlanScreen() {
     })
 
     // Ration pickup stores from remaining stock after delivery stores
-    pickupStores.forEach(s => {
+    pickupStores.filter(p => !p.is_d2c).forEach(s => {
       s.skuReqs = s.skuReqs.map(r => {
         const avail = runningStock[r.sku_id] ?? 0
         const qty = Math.min(r.qty, avail)
@@ -321,7 +351,21 @@ export default function WeekPlanScreen() {
     })
     stores_to_assign.forEach(s => { if (staleIds.has(s.store_id)) delete assign[s.store_id] })
 
-    setDueStores(stores_due.filter(s => s.skuReqs.some(r => r.qty > 0)))
+    // Put stores added by hand back on their day (drop ones whose day has passed)
+    const manual = readManual()
+    const finalDue = stores_due.filter(s => s.skuReqs.some(r => r.qty > 0))
+    const manualOverrides = {}
+    Object.entries(manual).forEach(([sid, m]) => {
+      if (!m?.date || m.date < todayStr) { delete manual[sid]; return }
+      const dayIdx = planDates.indexOf(m.date)
+      if (dayIdx < 0) return // that day isn't in the current plan window
+      if (!finalDue.some(x => x.store_id === sid)) finalDue.push({ ...m.store, manual: true })
+      assign[sid] = dayIdx
+      Object.assign(manualOverrides, m.overrides || {})
+    })
+    writeManual(manual)
+    if (Object.keys(manualOverrides).length) setQtyOverrides(o => ({ ...manualOverrides, ...o }))
+    setDueStores(finalDue)
     setAssignment(assign)
     setLoading(false)
   }
@@ -407,7 +451,12 @@ export default function WeekPlanScreen() {
 
   // Persist schedule state so tab switches don't reset it
   useEffect(() => {
-    if (loading || dueStores.length === 0 || Object.keys(assignment).length === 0 || cacheRestored) { setCacheRestored(false); return }
+    overridesRef.current = qtyOverrides
+    if (loading) return
+    // keep hand-added stores' quantities in their saved entry
+    updateManual(m => Object.keys(m).forEach(sid => {
+      m[sid].overrides = Object.fromEntries(Object.entries(qtyOverrides).filter(([k]) => k.startsWith(sid + '-')))
+    }))
     sessionStorage.setItem('prosa_schedule_cache', JSON.stringify({
       dates: planDates.join(','),
       budget: DAILY_BUDGET_MIN,
@@ -423,12 +472,39 @@ export default function WeekPlanScreen() {
   }, [assignment, dueStores, locked, pickupDue, availableStock, spareStock, unscheduled, qtyOverrides])
 
   function moveStore(storeId, newDay) {
+    updateManual(m => { if (m[storeId]) m[storeId].date = planDates[newDay] || dateForOffset(newDay) })
     setAssignment(a => ({ ...a, [storeId]: newDay }))
     setHasUnsavedChanges(true)
     setSaved(false)
   }
 
+  // After adding a store by hand: if stock is now short, trim forecast stores (least urgent first)
+  // so D2C and hand-added stores keep what was entered. Day assignments are not touched.
+  function rebalanceStock(nextDue, nextOverrides) {
+    const qtyOf = (st, r) => Number(nextOverrides[`${st.store_id}-${r.sku_id}`] ?? r.qty) || 0
+    const next = { ...nextOverrides }
+    Object.keys({ ...availableStock, ...spareStock }).forEach(skuId => {
+      const stock = (availableStock[skuId] || 0) + (spareStock[skuId] || 0)
+      let used = 0
+      pickupDue.forEach(p => p.skuReqs.forEach(r => { if (r.sku_id === skuId) used += qtyOf(p, r) }))
+      nextDue.forEach(st => st.skuReqs.forEach(r => { if (r.sku_id === skuId) used += qtyOf(st, r) }))
+      let over = used - stock
+      if (over <= 0) return
+      const trimmable = nextDue.filter(st => !st.manual).sort((a, b) => (b.due_date || '').localeCompare(a.due_date || ''))
+      for (const st of trimmable) {
+        if (over <= 0) break
+        const r = st.skuReqs.find(x => x.sku_id === skuId)
+        if (!r) continue
+        const cur = qtyOf(st, r)
+        const cut = Math.min(cur, over)
+        if (cut > 0) { next[`${st.store_id}-${skuId}`] = cur - cut; over -= cut }
+      }
+    })
+    return next
+  }
+
   function skipStore(store) {
+    updateManual(m => { delete m[store.store_id] })
     setDueStores(ds => ds.filter(s => s.store_id !== store.store_id))
     setPickupDue(ps => ps.filter(s => s.store_id !== store.store_id))
     if (!store.is_pickup) setUnscheduled(u => [...u, { ...store, skipReason: 'Manually skipped' }])
@@ -554,6 +630,8 @@ export default function WeekPlanScreen() {
     setAssignment({})
     setDueStores([])
     setQtyOverrides({})
+    overridesRef.current = {} // so the recompute doesn't reserve the old D2C quantity
+    writeManual({}) // a fresh plan: forget hand-added stores too
     sessionStorage.removeItem('prosa_schedule_cache')
     try {
       const { data: { user } } = await supabase.auth.getUser()
@@ -573,6 +651,12 @@ export default function WeekPlanScreen() {
           const { error: e4 } = await supabase.from('plan_stops').delete().in('id', deletable)
           if (e4) throw e4
         }
+      }
+      // D2C hold-back is wiped too
+      const { data: d2c } = await supabase.from('stores').select('id').eq('is_d2c', true)
+      if (d2c?.length) {
+        const { error: e5 } = await supabase.from('pickup_allocations').delete().in('store_id', d2c.map(x => x.id))
+        if (e5) throw e5
       }
     } catch (e) {
       setSaveError('Reset did not finish: ' + (e.message || e) + '. Nothing was lost — try again when online.')
@@ -702,6 +786,33 @@ export default function WeekPlanScreen() {
     <div className="flex-1 flex flex-col overflow-hidden">
       {showAdjust && <StockAdjustModal onClose={() => setShowAdjust(false)} />}
       {historyFor && <StoreHistoryModal {...historyFor} onClose={() => setHistoryFor(null)} />}
+      {confirmReset && createPortal(
+        <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={() => setConfirmReset(false)}>
+          <div className="bg-[var(--bg-card)] rounded-2xl p-5 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="text-[var(--text-primary)] font-semibold mb-1">Reset & recompute?</div>
+            <p className="text-[var(--text-muted2)] text-xs mb-3">The plan is rebuilt from the forecast and current stock. This will be lost:</p>
+            {(() => {
+              const manualStores = dueStores.filter(x => x.manual)
+              const d2c = pickupDue.filter(p => p.is_d2c).map(p => ({
+                name: p.name, qty: p.skuReqs.reduce((n, r) => n + (Number(qtyOverrides[`${p.store_id}-${r.sku_id}`] ?? r.qty) || 0), 0),
+              })).filter(x => x.qty > 0)
+              return (
+                <ul className="text-sm text-[var(--text-secondary)] flex flex-col gap-1.5 mb-4">
+                  <li>• <b>Stores you added by hand</b>{manualStores.length ? `: ${manualStores.map(x => x.name).join(', ')}` : ' (none now)'}</li>
+                  <li>• <b>D2C hold-back</b>{d2c.length ? `: ${d2c.map(x => `${x.qty} pcs`).join(', ')}` : ' (none now)'}</li>
+                  <li>• Quantity changes and day moves</li>
+                  <li>• Saved stops for upcoming days <span className="text-[var(--text-muted2)]">(delivered, visited and Delivery-tab stops are kept)</span></li>
+                </ul>
+              )
+            })()}
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmReset(false)} className="flex-1 py-2.5 rounded-xl border border-[var(--bg-input)] text-[var(--text-secondary)] text-sm">Cancel</button>
+              <button onClick={() => { setConfirmReset(false); resetPlan() }} className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold">Reset</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
       <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
         <span className="text-[var(--text-muted)] text-sm flex items-center gap-1.5">
           <>
@@ -763,7 +874,7 @@ export default function WeekPlanScreen() {
           const stale = stalePlans.some(p => p.plan_date >= weekStart && p.plan_date < today && p.plan_stops?.length > 0)
           return (
             <>
-            <button onClick={resetPlan} disabled={resetting}
+            <button onClick={() => setConfirmReset(true)} disabled={resetting}
               className={`text-xs disabled:opacity-50 transition-colors font-medium ${stale ? 'text-red-400 hover:text-red-300' : 'text-[var(--text-muted2)] hover:text-[var(--text-primary)]'}`}>
               {resetting ? 'Resetting...' : stale ? '⚠ Reset & recompute' : 'Reset & recompute'}
             </button>
@@ -1136,6 +1247,7 @@ export default function WeekPlanScreen() {
                         const day = Number(e.target.value)
                         if (isNaN(day) || e.target.value === '') return
                         const storeToAdd = { ...s, manual: true, skuReqs: s.skuReqs.map(r => ({ ...r, requested: r.requested ?? r.qty })) }
+                        updateManual(m => { m[s.store_id] = { date: planDates[day] || dateForOffset(day), store: storeToAdd, overrides: {} } })
                         setDueStores(prev => [...prev, storeToAdd])
                         setAssignment(a => ({ ...a, [s.store_id]: day }))
                         setUnscheduled(prev => prev.filter(x => x.store_id !== s.store_id))
@@ -1332,7 +1444,8 @@ export default function WeekPlanScreen() {
                         if (val !== undefined && val !== '' && Number(val) > 0)
                           newOverrides[`${selectedStore.store_id}-${skuId}`] = Number(val)
                       })
-                      const nextOverrides = { ...qtyOverrides, ...newOverrides }
+                      const nextOverrides = rebalanceStock([...dueStores, { ...selectedStore, manual: true, skuReqs: [...selectedStore.skuReqs.map(r => ({ ...r, qty: 0 })), ...extraSkuReqs] }], { ...qtyOverrides, ...newOverrides })
+                      updateManual(m => { m[selectedStore.store_id] = { date: planDates[day] || dateForOffset(day), store: storeToAdd, overrides: newOverrides } })
                       const nextDueStores = [...dueStores, storeToAdd]
                       const nextAssignment = { ...assignment, [selectedStore.store_id]: day }
                       setQtyOverrides(nextOverrides)
