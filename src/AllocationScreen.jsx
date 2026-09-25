@@ -313,7 +313,7 @@ export default function AllocationScreen() {
                       summary: [
                         row.avg_daily_rate != null && `Sells ~${Number(row.avg_daily_rate)}/day`,
                         row.avg_gap_days != null && `visit every ${Number(row.avg_gap_days)} days`,
-                        row.recent_soldouts != null && `sold out ${row.recent_soldouts} of last 3`,
+                        row.recent_soldouts != null && `sold out ${row.recent_soldouts} of last 3${row.last_soldout ? ' (incl. latest)' : ''}`,
                       ].filter(Boolean).join(' · '),
                     })}
                     className="text-[var(--text-primary)] text-sm font-medium truncate text-left underline decoration-dotted decoration-[var(--text-muted2)] underline-offset-4">

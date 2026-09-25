@@ -2,7 +2,8 @@
 -- Sold per day for each delivery = (delivered − returns linked to THAT delivery) / days until the next visit.
 -- One row per store+product+day (a visit split across batches counts once).
 -- recent_soldouts: of the last 3 completed visits, how many came back with nothing returned
---   (the app adds +1 pack when this is 2 or more — sold-out stores can't show their real demand).
+-- last_soldout: the latest completed visit came back with nothing returned
+--   (the app adds +1 pack when last_soldout AND recent_soldouts >= 2 — sold-out stores can't show their real demand).
 CREATE OR REPLACE VIEW public.store_sku_forecast WITH (security_invoker = true) AS
 WITH lines AS (
   SELECT dl.id, COALESCE(dl.store_id, ps.store_id) AS store_id, dl.sku_id, dl.delivered_on, dl.qty_delivered
@@ -36,7 +37,8 @@ WITH lines AS (
          COALESCE(stddev(rate), 0::numeric) AS rate_stddev,
          avg(days_gap) AS avg_gap_days,
          bool_or(sold_out) AS has_stockout_gap,
-         (count(*) FILTER (WHERE rn <= 3 AND sold_out))::integer AS recent_soldouts
+         (count(*) FILTER (WHERE rn <= 3 AND sold_out))::integer AS recent_soldouts,
+         COALESCE(bool_or(sold_out) FILTER (WHERE rn = 1), false) AS last_soldout
   FROM done GROUP BY store_id, sku_id
 ), latest AS (
   SELECT DISTINCT ON (store_id, sku_id) store_id, sku_id, delivered_on AS last_visit_date, q AS last_delivered_qty
@@ -53,7 +55,7 @@ SELECT l.store_id, l.sku_id, s.name AS store_name, sk.name AS sku_name,
        END AS next_visit_due,
        CASE WHEN st.visit_count < 8 THEN 'low'::text ELSE 'high'::text END AS confidence,
        s.is_pickup, sk.min_delivery_qty, s.pipeline_status,
-       st.recent_soldouts
+       st.recent_soldouts, st.last_soldout
 FROM latest l
 JOIN stats st ON st.store_id = l.store_id AND st.sku_id = l.sku_id
 JOIN stores s ON s.id = l.store_id
