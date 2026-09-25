@@ -73,6 +73,56 @@ function twoOpt(depotId, route, cost, closeLoop = true) {
   return { route: best, cost: bestCost }
 }
 
+// Or-opt: take a run of 1–3 stops and move it (as is, or reversed) to any other place in the
+// route. Catches "visit this store on the way back" — something 2-opt alone often misses.
+function orOpt(depotId, route, cost, closeLoop = true) {
+  let best = [...route]
+  let bestCost = routeCost(depotId, best, cost, closeLoop)
+  let improved = true
+  while (improved) {
+    improved = false
+    for (let len = 1; len <= 3; len++) {
+      for (let i = 0; i + len <= best.length; i++) {
+        const seg = best.slice(i, i + len)
+        const rest = [...best.slice(0, i), ...best.slice(i + len)]
+        for (let j = 0; j <= rest.length; j++) {
+          if (j === i) continue
+          for (const piece of len > 1 ? [seg, [...seg].reverse()] : [seg]) {
+            const cand = [...rest.slice(0, j), ...piece, ...rest.slice(j)]
+            const c = routeCost(depotId, cand, cost, closeLoop)
+            if (c < bestCost - 0.0001) { best = cand; bestCost = c; improved = true }
+          }
+        }
+      }
+    }
+  }
+  return { route: best, cost: bestCost }
+}
+
+// Improve a route with 2-opt and Or-opt until neither finds anything better.
+function localSearch(depotId, route, cost, closeLoop) {
+  let cur = { route, cost: routeCost(depotId, route, cost, closeLoop) }
+  for (;;) {
+    const a = twoOpt(depotId, cur.route, cost, closeLoop)
+    const b = orOpt(depotId, a.route, cost, closeLoop)
+    if (b.cost >= cur.cost - 0.0001) return cur.cost <= b.cost ? cur : b
+    cur = b
+  }
+}
+
+// Try several starting routes (nearest-neighbour from the depot, and one starting at each stop)
+// and keep the cheapest after local search. Small routes (≤ 20 stops) — fast enough on a phone.
+function bestRoute(depotId, ids, cost, closeLoop) {
+  const seeds = [nnRoute(depotId, ids, cost, closeLoop)]
+  if (ids.length <= 20) ids.forEach(first => seeds.push([first, ...nnRoute(first, ids.filter(x => x !== first), cost, closeLoop)]))
+  let best = null
+  for (const seed of seeds) {
+    const r = localSearch(depotId, seed, cost, closeLoop)
+    if (!best || r.cost < best.cost - 0.0001) best = r
+  }
+  return best.route
+}
+
 const LIVE_ID = '__live__'
 
 function haversineSec(lat1, lng1, lat2, lng2) {
@@ -89,10 +139,7 @@ function buildSequence(depotId, stopsInfo, cost, closeLoop = true) {
   const unlockedIds = unlockedStops.map(s => s.store_id)
 
   let orderedUnlocked = []
-  if (unlockedIds.length > 0) {
-    const seed = nnRoute(depotId, unlockedIds, cost, closeLoop)
-    orderedUnlocked = twoOpt(depotId, seed, cost, closeLoop).route
-  }
+  if (unlockedIds.length > 0) orderedUnlocked = bestRoute(depotId, unlockedIds, cost, closeLoop)
 
   const finalOrder = new Array(stopsInfo.length).fill(null)
   lockedStops.sort((a, b) => a.origIndex - b.origIndex).forEach(s => { finalOrder[s.origIndex] = s.store_id })
