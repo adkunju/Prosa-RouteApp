@@ -4,8 +4,48 @@ import { fetchAll, localISO } from './dbUtils'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import PipelineTag from './PipelineTag'
 import { useGeolocation, haversineKm } from './useGeolocation'
-import { TrendingUp, TrendingDown, AlertTriangle, Package, Star, ClipboardList } from 'lucide-react'
+import { TrendingUp, TrendingDown, AlertTriangle, Package, Star, ClipboardList, ChevronLeft, ChevronRight } from 'lucide-react'
 import { CallLogModal, openFollowups } from './FollowupsCard'
+
+// Every delivery line with what was actually sold: delivered − returned (returns counted
+// against the delivery they came from). One rule for the Sales tile and the Sales popup.
+async function fetchSoldLines() {
+  const [data, rets] = await Promise.all([
+    fetchAll(() => supabase.from("delivery_lines")
+      .select("id, store_id, delivered_on, qty_delivered, unit_price, skus(name, unit_price)")
+      .not("qty_delivered", "is", null).order("id")),
+    fetchAll(() => supabase.from("returns").select("delivery_line_id, qty_returned").not("delivery_line_id", "is", null).order("id")),
+  ])
+  const retByLine = {}
+  rets.forEach(r => { retByLine[r.delivery_line_id] = (retByLine[r.delivery_line_id] || 0) + (r.qty_returned || 0) })
+  return data.map(l => ({
+    ...l,
+    sold: l.qty_delivered - (retByLine[l.id] || 0),
+    price: Number(l.unit_price ?? l.skus?.unit_price ?? 0), // ?? so a genuine ₹0 price isn't replaced
+  }))
+}
+function salesByMonth(lines) {
+  const byMonth = {}
+  lines.forEach(l => {
+    const m = (l.delivered_on || "").slice(0, 7)
+    if (!m) return
+    if (!byMonth[m]) byMonth[m] = { month: m, qty: 0, revenue: 0 }
+    byMonth[m].qty += l.sold
+    byMonth[m].revenue += l.sold * l.price
+  })
+  return byMonth
+}
+// 'YYYY-MM' → 'September' (adds the year when it isn't this year)
+function monthLabel(ym) {
+  const [y, m] = ym.split('-').map(Number)
+  const opts = y === new Date().getFullYear() ? { month: 'long' } : { month: 'short', year: 'numeric' }
+  return new Date(y, m - 1, 1).toLocaleDateString('en-GB', opts)
+}
+function shiftMonth(ym, n) {
+  const [y, m] = ym.split('-').map(Number)
+  const d = new Date(y, m - 1 + n, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
 
 function fmt(n) { return `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` }
 function pct(n) { if (n === null || n === undefined) return null; const v = Number(n); return `${v > 0 ? '+' : ''}${v.toFixed(1)}%` }
@@ -138,6 +178,8 @@ export default function SalesScreen() {
   const [pipeline, setPipeline] = useState('all')
   const [searchQ, setSearchQ] = useState('')
   const [showSalesPopup, setShowSalesPopup] = useState(false)
+  const [salesMonth, setSalesMonth] = useState(localISO().slice(0, 7))
+  const [monthSales, setMonthSales] = useState(null) // { 'YYYY-MM': { qty, revenue } }
   const [reloadKey, setReloadKey] = useState(0)
   const { position } = useGeolocation()
   const [sortBy, setSortBy] = useState('distance')
@@ -181,6 +223,9 @@ export default function SalesScreen() {
     setData((rows || []).map(s => ({ ...s, _coords: coordMap[s.store_id] })))
     setLoading(false)
   })() }, [reloadKey])
+  useEffect(() => {
+    fetchSoldLines().then(lines => setMonthSales(salesByMonth(lines))).catch(() => setMonthSales({}))
+  }, [reloadKey])
 
   const top = data.filter(s => s.visit_count >= 5).slice(0, 10)
 
@@ -216,8 +261,10 @@ export default function SalesScreen() {
   })
 
   const thisMonth = localISO().slice(0, 7)
+  const firstMonth = monthSales ? Object.keys(monthSales).sort()[0] || thisMonth : thisMonth
+  const canPrev = salesMonth > firstMonth
+  const canNext = salesMonth < thisMonth
   const totalRevenue = data.reduce((n, s) => n + Number(s.revenue), 0)
-  const monthRevenue = data.reduce((n, s) => n + Number(s.revenue_30d), 0)
   const totalWaste = data.reduce((n, s) => n + Number(s.waste_value), 0)
   const wasteRate = totalRevenue > 0 ? (totalWaste / (totalRevenue + totalWaste) * 100).toFixed(1) : 0
 
@@ -227,12 +274,24 @@ export default function SalesScreen() {
     <div className="flex-1 flex flex-col overflow-hidden">
       {logStore && <CallLogModal store={logStore} onClose={() => setLogStore(null)} />}
       <div className="px-4 pt-4 pb-2 shrink-0">
-        <div className="grid grid-cols-3 gap-2 mb-3">
-          <button onClick={() => setShowSalesPopup(true)}
-            className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-xl px-3 py-2 text-left hover:border-[var(--accent)]/40 transition-colors">
-            <div className="text-[var(--text-muted2)] text-[9px] uppercase tracking-wider">Month sales</div>
-            <div className="text-[var(--text-primary)] text-sm font-bold leading-tight mt-0.5">{fmt(monthRevenue)}</div>
-          </button>
+        <div className="grid grid-cols-4 gap-2 mb-3">
+          <div onClick={() => setShowSalesPopup(true)} role="button"
+            className="col-span-2 cursor-pointer bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-xl px-1 py-2 flex items-center hover:border-[var(--accent)]/40 transition-colors">
+            <button onClick={e => { e.stopPropagation(); if (canPrev) setSalesMonth(m => shiftMonth(m, -1)) }} disabled={!canPrev}
+              aria-label="Previous month" className="p-1 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+              <ChevronLeft size={16} />
+            </button>
+            <div className="flex-1 min-w-0 text-center">
+              <div className="text-[var(--text-muted2)] text-[9px] uppercase tracking-wider truncate">Sales – {monthLabel(salesMonth)}</div>
+              <div className="text-[var(--text-primary)] text-sm font-bold leading-tight mt-0.5">
+                {monthSales ? fmt(monthSales[salesMonth]?.revenue || 0) : '…'}
+              </div>
+            </div>
+            <button onClick={e => { e.stopPropagation(); if (canNext) setSalesMonth(m => shiftMonth(m, 1)) }} disabled={!canNext}
+              aria-label="Next month" className="p-1 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+              <ChevronRight size={16} />
+            </button>
+          </div>
           <button onClick={() => setShowExpiryPopup(true)}
             className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-xl px-3 py-2 text-left hover:border-[var(--accent)]/40 transition-colors">
             <div className="text-[var(--text-muted2)] text-[9px] uppercase tracking-wider">Waste rate</div>
@@ -282,7 +341,7 @@ export default function SalesScreen() {
         )}
         {rows.map(s => <StoreCard key={s.store_id} s={s} phones={phones} onChanged={() => setReloadKey(k => k + 1)} position={position} lastCall={lastCalls[s.store_id]} onOpenLog={() => setLogStore({ store_id: s.store_id, name: s.name })} />)}
       </div>
-      {showSalesPopup && <SalesPopup onClose={() => setShowSalesPopup(false)} stores={data} />}
+      {showSalesPopup && <SalesPopup onClose={() => setShowSalesPopup(false)} stores={data} initialMonth={salesMonth} />}
       {showExpiryPopup && <ExpiryPopup onClose={() => setShowExpiryPopup(false)} stores={data} />}
     </div>
   )
@@ -300,38 +359,17 @@ function monthOptions() {
   return opts
 }
 
-function SalesPopup({ onClose, stores }) {
+function SalesPopup({ onClose, stores, initialMonth }) {
   const [tab, setTab] = useState('monthly')
-  const [month, setMonth] = useState(localISO().slice(0, 7))
+  const [month, setMonth] = useState(initialMonth || localISO().slice(0, 7))
   const [monthly, setMonthly] = useState([])
   const [storeMonth, setStoreMonth] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { (async () => {
     setLoading(true)
-    // Sold = delivered − returned (returns counted against the delivery they came from),
-    // same rule as the store totals on the Sales screen.
-    const [data, rets] = await Promise.all([
-      fetchAll(() => supabase.from("delivery_lines")
-        .select("id, store_id, delivered_on, qty_delivered, unit_price, skus(name, unit_price)")
-        .not("qty_delivered", "is", null).order("id")),
-      fetchAll(() => supabase.from("returns").select("delivery_line_id, qty_returned").not("delivery_line_id", "is", null).order("id")),
-    ])
-    const retByLine = {}
-    rets.forEach(r => { retByLine[r.delivery_line_id] = (retByLine[r.delivery_line_id] || 0) + (r.qty_returned || 0) })
-    const lines = data.map(l => ({
-      ...l,
-      sold: l.qty_delivered - (retByLine[l.id] || 0),
-      price: Number(l.unit_price ?? l.skus?.unit_price ?? 0), // ?? so a genuine ₹0 price isn't replaced
-    }))
-    const byMonth = {}
-    lines.forEach(l => {
-      const m = (l.delivered_on || "").slice(0, 7)
-      if (!m) return
-      if (!byMonth[m]) byMonth[m] = { month: m, qty: 0, revenue: 0 }
-      byMonth[m].qty += l.sold
-      byMonth[m].revenue += l.sold * l.price
-    })
+    const lines = await fetchSoldLines()
+    const byMonth = salesByMonth(lines)
     setMonthly(Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month)))
     const byStore = {}
     lines.filter(l => (l.delivered_on || "").startsWith(month)).forEach(l => {
