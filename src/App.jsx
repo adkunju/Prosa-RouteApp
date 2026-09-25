@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
 import AuthGate from './AuthGate'
 import { syncMatrix } from './matrixUtils'
-import { loadWaTemplates, loadWaContext } from './waTemplates'
+import { startWaTemplateLoader, loadWaContext, setStoreStatus } from './waTemplates'
 import CallFollowupPrompt from './CallFollowupPrompt'
 import ConfirmHost from './ConfirmDialog'
 import DashboardScreen from './DashboardScreen'
@@ -106,13 +106,20 @@ function Shell() {
     return () => window.removeEventListener('prosa:goto', go)
   }, [])
   useEffect(() => {
-    loadWaTemplates().catch(() => {})
+    const stopLoader = startWaTemplateLoader()
     // store facts for message placeholders; refresh after calls and deliveries
     const refresh = () => loadWaContext().catch(() => {})
     refresh()
+    const onStatus = e => setStoreStatus(e.detail?.storeId, e.detail?.status)
     window.addEventListener('prosa:call_logged', refresh)
     window.addEventListener('prosa:stock_changed', refresh)
-    return () => { window.removeEventListener('prosa:call_logged', refresh); window.removeEventListener('prosa:stock_changed', refresh) }
+    window.addEventListener('prosa:contacts_changed', refresh)
+    window.addEventListener('prosa:pipeline_changed', onStatus)
+    return () => {
+      stopLoader()
+      window.removeEventListener('prosa:call_logged', refresh); window.removeEventListener('prosa:stock_changed', refresh)
+      window.removeEventListener('prosa:contacts_changed', refresh); window.removeEventListener('prosa:pipeline_changed', onStatus)
+    }
   }, [])
   // Quietly fill travel times for any store that has none (no route-service call if nothing is missing)
   useEffect(() => {

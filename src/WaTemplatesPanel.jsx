@@ -21,7 +21,9 @@ export default function WaTemplatesPanel() {
   const [showRef, setShowRef] = useState(true)
   const boxes = useRef({})
 
-  useEffect(() => { loadWaTemplates().then(setVals) }, [])
+  const [loadError, setLoadError] = useState('')
+  const load = () => { setLoadError(''); loadWaTemplates().then(setVals).catch(e => setLoadError(e.message || 'No connection')) }
+  useEffect(load, [])
 
   // Insert a placeholder at the cursor position of that message box
   function insert(key, token) {
@@ -46,6 +48,12 @@ export default function WaTemplatesPanel() {
     setSaved(true); setTimeout(() => setSaved(false), 1500)
   }
 
+  if (!vals && loadError) return (
+    <div className="text-sm">
+      <p className="text-red-400 mb-2">Couldn't load your saved messages ({loadError}).</p>
+      <button onClick={load} className="text-[var(--accent)] font-medium">Try again</button>
+    </div>
+  )
   if (!vals) return <p className="text-[var(--text-muted2)] text-sm">Loading...</p>
   return (
     <div className="flex flex-col gap-4">

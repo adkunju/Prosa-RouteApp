@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient'
+import { fetchAll } from './dbUtils'
 
 // WhatsApp opening messages, one per store group. {store} is replaced with the store's name.
 //  prospect  → status 'prospect'
@@ -21,12 +22,38 @@ const KEYS = Object.keys(WA_DEFAULTS)
 // Cached in memory so the WhatsApp tap can open instantly (phones block
 // windows opened after waiting on the network).
 let cache = { ...WA_DEFAULTS }
+let loaded = false
+// Throws if your saved messages couldn't be read (so Settings never shows the defaults
+// as if they were yours, and a later Save can't overwrite your real messages).
 export async function loadWaTemplates() {
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return cache
-  const { data } = await supabase.from('user_settings').select(KEYS.join(', ')).eq('user_id', user.id).maybeSingle()
+  if (!user) throw new Error('Not signed in')
+  const { data, error } = await supabase.from('user_settings').select(KEYS.join(', ')).eq('user_id', user.id).maybeSingle()
+  if (error) throw error
   cache = Object.fromEntries(KEYS.map(k => [k, data?.[k] ?? WA_DEFAULTS[k]]))
+  loaded = true
   return cache
+}
+export const waTemplatesLoaded = () => loaded
+
+// App start: keep retrying until the messages are loaded (weak signal, app opened offline).
+// Retries after 5s, 15s, 30s, then every minute; also when the phone comes back online
+// or the app is reopened.
+export function startWaTemplateLoader() {
+  let timer = null, tries = 0, stopped = false
+  const attempt = async () => {
+    clearTimeout(timer)
+    if (stopped || loaded) return
+    try { await loadWaTemplates() } catch {
+      tries++
+      timer = setTimeout(attempt, [5000, 15000, 30000][tries - 1] ?? 60000)
+    }
+  }
+  const onWake = () => { if (!loaded && document.visibilityState !== 'hidden') attempt() }
+  window.addEventListener('online', onWake)
+  document.addEventListener('visibilitychange', onWake)
+  attempt()
+  return () => { stopped = true; clearTimeout(timer); window.removeEventListener('online', onWake); document.removeEventListener('visibilitychange', onWake) }
 }
 export function setWaTemplates(patch) { cache = { ...cache, ...patch } }
 export function getWaTemplates() { return cache }
@@ -66,14 +93,18 @@ const localYMD = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() +
 
 // Per-store facts, loaded once in the background (and refreshed after calls/deliveries)
 let storeCtx = {}
+let storeStatus = {} // store id → pipeline status, for picking the message group
 export async function loadWaContext() {
   const since = new Date(); since.setDate(since.getDate() - 120)
-  const [{ data: lines }, { data: logs }] = await Promise.all([
-    supabase.from('delivery_lines').select('store_id, delivered_on, qty_delivered')
-      .gt('qty_delivered', 0).gte('delivered_on', localYMD(since)).order('delivered_on', { ascending: false }).limit(1000),
-    supabase.from('call_logs').select('store_id, kind, note, follow_up_on, called_at')
-      .not('store_id', 'is', null).order('called_at', { ascending: false }).limit(2000),
+  // Paged, so every store is covered (a single request stops at 1000 rows)
+  const [lines, logs, stores] = await Promise.all([
+    fetchAll(() => supabase.from('delivery_lines').select('id, store_id, delivered_on, qty_delivered')
+      .gt('qty_delivered', 0).gte('delivered_on', localYMD(since)).order('delivered_on', { ascending: false }).order('id')),
+    fetchAll(() => supabase.from('call_logs').select('id, store_id, kind, note, follow_up_on, called_at')
+      .not('store_id', 'is', null).order('called_at', { ascending: false }).order('id')),
+    fetchAll(() => supabase.from('stores').select('id, pipeline_status').order('id')),
   ])
+  storeStatus = Object.fromEntries(stores.map(s => [s.id, s.pipeline_status]))
   const ctx = {}
   const get = id => (ctx[id] = ctx[id] || {})
   ;(lines || []).forEach(l => {
@@ -154,8 +185,11 @@ export function buildDeliveryText(storeName, storeId, contactName, contactTitle,
   return [fillPlaceholders(tpl, storeName, storeId, contactName, contactTitle, delivery).trim(), link].filter(Boolean).join('\n\n')
 }
 
+export function setStoreStatus(storeId, status) { if (storeId) storeStatus[storeId] = status }
+
 export function buildWaText(status, storeName, storeId, contactName, contactTitle) {
-  const g = waGroup(status)
+  // A screen may not have the store's status yet (still loading) — use the one loaded at app start
+  const g = waGroup(status || storeStatus[storeId])
   const tpl = cache[`wa_msg_${g}`] || ''
   const link = (cache[`wa_link_${g}`] || '').trim()
   // Link goes on its own line at the end — WhatsApp shows it as a preview card

@@ -13,6 +13,10 @@ export function markCallStarted(store) {
   try { localStorage.setItem(KEY, JSON.stringify({ ...store, at: Date.now() })) } catch { /* ignore */ }
 }
 
+// A call remark needs at least 2 real words (numbers count; stray symbols don't)
+export const remarkWords = t => (t || '').trim().split(/\s+/).filter(w => /[\p{L}\p{N}]/u.test(w)).length
+export const MIN_REMARK_WORDS = 2
+
 const addDays = n => { const d = new Date(); d.setDate(d.getDate() + n); return localISO(d) }
 const QUICK = [['Tomorrow', 1], ['3 days', 3], ['1 week', 7], ['2 weeks', 14]]
 
@@ -44,7 +48,9 @@ export function LogCallForm({ storeId, calledAt, contactId, showDate = false, on
   })() }, [storeId])
   const statusChanged = origStatus && status && status !== origStatus
 
+  const remarkOk = remarkWords(note) >= MIN_REMARK_WORDS
   async function save() {
+    if (!remarkOk) { setError('Add a remark — at least 2 words on how the call went'); return }
     setSaving(true); setError('')
     if (statusChanged) {
       const { error: se } = await supabase.from('stores').update({
@@ -61,7 +67,7 @@ export function LogCallForm({ storeId, calledAt, contactId, showDate = false, on
     const { error: e } = await supabase.from('call_logs').insert({
       store_id: storeId,
       store_contact_id: spokeWith || null,
-      note: [statusChanged ? `Status: ${origStatus} → ${status}` : null, note.trim() || null].filter(Boolean).join('\n') || null,
+      note: [statusChanged ? `Status: ${origStatus} → ${status}` : null, note.trim()].filter(Boolean).join('\n'),
       follow_up_on: followUp || null,
       called_at: when.toISOString(),
     })
@@ -99,8 +105,11 @@ export function LogCallForm({ storeId, calledAt, contactId, showDate = false, on
       ) : (
         <p className="text-[var(--text-muted2)] text-xs mb-3">No contacts saved yet — add the person you spoke to.</p>
       )}
-      <label className="text-[var(--text-muted)] text-xs mb-1 block">Remark</label>
-      <textarea rows={3} autoFocus value={note} onChange={e => setNote(e.target.value)}
+      <label className="text-[var(--text-muted)] text-xs mb-1 flex justify-between">
+        <span>Remark <span className="text-red-400">*</span></span>
+        {note.trim() && !remarkOk && <span className="text-[var(--text-muted2)]">at least 2 words</span>}
+      </label>
+      <textarea rows={3} autoFocus value={note} onChange={e => { setNote(e.target.value); if (error) setError('') }}
         placeholder="e.g. Manager asked to call back after Onam, interested in batter"
         className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-3 resize-none" />
 
@@ -128,7 +137,7 @@ export function LogCallForm({ storeId, calledAt, contactId, showDate = false, on
       {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
       <div className="flex gap-2">
         <button onClick={onCancel} className="px-4 text-[var(--text-muted2)] text-sm">{cancelLabel}</button>
-        <button onClick={save} disabled={saving || (!note.trim() && !followUp && !statusChanged)}
+        <button onClick={save} disabled={saving || !remarkOk}
           className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white font-semibold rounded-lg py-2.5">
           {saving ? 'Saving...' : 'Log call'}
         </button>

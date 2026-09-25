@@ -47,9 +47,6 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
   const [syncing, setSyncing] = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
 
-  const [callTarget, setCallTarget] = useState(null)
-  const [callNote, setCallNote] = useState('')
-  const [savingCall, setSavingCall] = useState(false)
 
   async function loadContacts() {
     const { data } = await supabase.from('store_contacts').select('*').eq('store_id', store.id)
@@ -225,14 +222,6 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
   function openWhatsapp(c) { openWhatsApp(c, contactCtx) }
   function startCall(c) { startContactCall(c, contactCtx) }
 
-  async function confirmCallLog(didCall) {
-    if (didCall) {
-      setSavingCall(true)
-      await supabase.from('call_logs').insert({ store_contact_id: callTarget.id, store_id: store.id, note: callNote.trim() || null })
-      setSavingCall(false)
-    }
-    setCallTarget(null)
-  }
 
   return (
     <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/60 backdrop-blur-sm flex items-center justify-center p-4"
@@ -395,26 +384,6 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
         </button>
       </div>
 
-      {callTarget && (
-        <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={e => { if (e.target === e.currentTarget) setCallTarget(null) }}>
-          <div className="bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 w-full max-w-sm shadow-2xl">
-            <div className="text-[var(--text-primary)] font-medium mb-3">Did you call {callTarget.name || callTarget.phone}?</div>
-            <textarea value={callNote} onChange={e => setCallNote(e.target.value)} placeholder="Log what was discussed (optional)"
-              rows={3}
-              className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] mb-3" />
-            <div className="flex gap-2">
-              <button onClick={() => confirmCallLog(false)} className="flex-1 bg-[var(--bg-input)] hover:bg-[var(--bg-hover)] text-[var(--text-primary)] text-sm font-medium rounded-lg py-2">
-                No
-              </button>
-              <button onClick={() => confirmCallLog(true)} disabled={savingCall}
-                className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-sm font-medium rounded-lg py-2">
-                {savingCall ? 'Saving...' : 'Yes, log it'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

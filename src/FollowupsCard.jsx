@@ -5,7 +5,7 @@ import { localISO } from './dbUtils'
 import { fuzzyMatch } from './fuzzy'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { X, PhoneCall, Plus, Search } from 'lucide-react'
-import { LogCallForm } from './CallFollowupPrompt'
+import { LogCallForm, remarkWords, MIN_REMARK_WORDS } from './CallFollowupPrompt'
 import { contactLabel } from './contactUtils'
 
 const dayLabel = ymd => {
@@ -239,7 +239,11 @@ function EditLogEntry({ log, onDone, onCancel }) {
   const [confirmDel, setConfirmDel] = useState(false)
   const [error, setError] = useState('')
 
+  // Calls need a real remark (the automatic "Status: a → b" line doesn't count)
+  const isCall = (log.kind || 'call') === 'call'
+  const remarkOk = !isCall || remarkWords(note.split('\n').filter(x => !x.startsWith('Status:')).join(' ')) >= MIN_REMARK_WORDS
   async function save() {
+    if (!remarkOk) return setError('Add a remark — at least 2 words on how the call went')
     setBusy(true); setError('')
     // Keep the original time of day unless the date changed
     const orig = new Date(log.called_at)
@@ -278,7 +282,7 @@ function EditLogEntry({ log, onDone, onCancel }) {
           {confirmDel ? 'Tap to delete' : 'Delete'}
         </button>
         <button onClick={onCancel} className="ml-auto text-sm text-[var(--text-muted2)] px-3">Cancel</button>
-        <button onClick={save} disabled={busy} className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white text-sm font-semibold rounded-lg px-4 py-2">
+        <button onClick={save} disabled={busy || !remarkOk} className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white text-sm font-semibold rounded-lg px-4 py-2">
           {busy ? 'Saving...' : 'Save'}
         </button>
       </div>
