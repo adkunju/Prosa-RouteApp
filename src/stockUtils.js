@@ -1,3 +1,4 @@
+import { askConfirm } from './ConfirmDialog'
 import { supabase } from './supabaseClient'
 import { fetchAll } from './dbUtils'
 
@@ -58,16 +59,30 @@ export function batchErrorText(msg) {
 // Before creating stock: is there already a batch of these products for this production date?
 // rows: [{ sku_id, qty }]. Returns true when it's OK to go ahead (nothing exists, or the user confirmed).
 export async function confirmNoDuplicateBatch(producedOn, rows) {
-  const skuIds = [...new Set(rows.filter(r => Number(r.qty) > 0).map(r => r.sku_id))]
+  const skuIds = [...new Set(rows.filter(r => Number(r.qty) > 0).map(r => r.sku_id).filter(Boolean))]
   if (!producedOn || !skuIds.length) return true
-  const { data } = await supabase.from('production_batches')
+  const { data, error } = await supabase.from('production_batches')
     .select('qty, is_spare, created_at, skus(name)').eq('produced_on', producedOn).in('sku_id', skuIds)
-  if (!data?.length) return true
   const [y, m, d] = producedOn.split('-').map(Number)
   const day = new Date(y, m - 1, d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
-  const list = data.map(b => {
+  if (error) {
+    // couldn't check — don't silently go ahead
+    return askConfirm({
+      title: 'Could not check existing stock',
+      intro: `Couldn't see whether stock for ${day} is already logged (${error.message}).`,
+      question: 'Save anyway?', okLabel: 'Save anyway',
+    })
+  }
+  if (!data?.length) return true
+  const lines = data.map(b => {
     const when = new Date(b.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
-    return `• ${b.skus?.name || 'Product'}: ${b.qty} pcs${b.is_spare ? ' (spare)' : ''} — logged ${when}`
-  }).join('\n')
-  return window.confirm(`Stock already exists for production date ${day}:\n\n${list}\n\nAdd another batch anyway?`)
+    return `${b.skus?.name || 'Product'}: ${b.qty} pcs${b.is_spare ? ' (spare)' : ''} — logged ${when}`
+  })
+  return askConfirm({
+    title: `Stock already exists for ${day}`,
+    intro: 'These batches are already logged with this production date:',
+    lines,
+    question: 'Add another batch anyway?',
+    okLabel: 'Add anyway', cancelLabel: 'Cancel', danger: true,
+  })
 }
