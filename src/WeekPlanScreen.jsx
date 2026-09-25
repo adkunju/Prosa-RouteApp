@@ -239,6 +239,10 @@ export default function WeekPlanScreen() {
     })
     // a hand-added store that's also due by forecast is handled once, as hand-added
     for (let i = stores_due.length - 1; i >= 0; i--) if (manualIds.has(stores_due[i].store_id)) stores_due.splice(i, 1)
+    // When stock is short, the most overdue stores are served first (then the bigger orders);
+    // stores due later are the ones left out.
+    const reqTotal = st => st.skuReqs.reduce((n, r) => n + (r.qty || 0), 0)
+    stores_due.sort((a, b) => (a.due_date || '').localeCompare(b.due_date || '') || reqTotal(b) - reqTotal(a))
     stores_due.forEach(s => {
       s.skuReqs = s.skuReqs.map(r => {
         const avail = runningStock[r.sku_id] ?? 0
@@ -248,8 +252,8 @@ export default function WeekPlanScreen() {
       })
     })
 
-    // Ration pickup stores from remaining stock after delivery stores
-    pickupStores.filter(p => !p.is_d2c).forEach(s => {
+    // Ration pickup stores from remaining stock after delivery stores (most overdue first)
+    pickupStores.filter(p => !p.is_d2c).sort((a, b) => (a.due_date || '').localeCompare(b.due_date || '')).forEach(s => {
       s.skuReqs = s.skuReqs.map(r => {
         const avail = runningStock[r.sku_id] ?? 0
         const qty = Math.min(r.qty, avail)
