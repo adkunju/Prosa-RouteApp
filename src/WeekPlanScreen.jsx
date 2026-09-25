@@ -738,8 +738,10 @@ export default function WeekPlanScreen() {
     const pickupAllocRows = pickupDue.flatMap(s => s.skuReqs.map(r => {
       const key = `${s.store_id}-${r.sku_id}`
       const qty = effectiveOverrides[key] !== undefined ? Number(effectiveOverrides[key]) : r.qty
-      return { user_id: user.id, store_id: s.store_id, sku_id: r.sku_id, qty, updated_at: new Date().toISOString() }
-    })).filter(r => r.qty > 0)
+      return { user_id: user.id, store_id: s.store_id, sku_id: r.sku_id, qty: Math.max(0, qty || 0), updated_at: new Date().toISOString() }
+    }))
+    // Zeros are saved too: "0 for Moolans" is a decision (stock ran short), and without it
+    // the Delivery tab would fall back to the forecast and show packs you don't have.
     if (pickupAllocRows.length) {
       const { error } = await supabase.from('pickup_allocations').upsert(pickupAllocRows, { onConflict: 'user_id,store_id,sku_id' })
       if (error) return fail('saving pickup quantities', error)
