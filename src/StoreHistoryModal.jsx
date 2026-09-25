@@ -8,7 +8,7 @@ const short = n => (n || 'Item').replace(/^Prosa\s+/i, '')
 
 // Store history grouped by product: totals on top, then a one-line-per-visit timeline
 // (last 90 days). Returns are shown on the visit they were picked up.
-export default function StoreHistoryModal({ storeId, storeName, onClose }) {
+export default function StoreHistoryModal({ storeId, storeName, summary, onClose }) {
   const [skus, setSkus] = useState(null)
 
   useEffect(() => { (async () => {
@@ -48,6 +48,7 @@ export default function StoreHistoryModal({ storeId, storeName, onClose }) {
           <div className="min-w-0">
             <div className="text-[var(--text-primary)] font-semibold truncate">{storeName}</div>
             <div className="text-[var(--text-muted2)] text-xs">Last 90 days</div>
+            {summary && <div className="text-[var(--text-secondary)] text-xs mt-0.5">{summary}</div>}
           </div>
           <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
         </div>

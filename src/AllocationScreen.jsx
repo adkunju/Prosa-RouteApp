@@ -3,6 +3,7 @@ import { supabase } from './supabaseClient'
 import { notifyStockChanged, confirmNoDuplicateBatch } from './stockUtils'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { computeProposedQty } from './forecastMath'
+import StoreHistoryModal from './StoreHistoryModal'
 import { Package, CheckCircle, ChevronDown } from 'lucide-react'
 
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
@@ -10,6 +11,7 @@ const today = () => localDate()
 
 export default function AllocationScreen() {
   const [confirming, setConfirming] = useState(false)
+  const [historyFor, setHistoryFor] = useState(null) // store whose delivery/return history is open
   const [confirmError, setConfirmError] = useState('')
   const [rows, setRows] = useState([])
   const [qtys, setQtys] = useState({})
@@ -306,7 +308,17 @@ export default function AllocationScreen() {
             <div className="flex items-start justify-between mb-1.5">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1">
-                  <span className="text-[var(--text-primary)] text-sm font-medium truncate">{row.store_name}</span>
+                  <button onClick={() => setHistoryFor({
+                      storeId: row.store_id, storeName: row.store_name,
+                      summary: [
+                        row.avg_daily_rate != null && `Sells ~${Number(row.avg_daily_rate)}/day`,
+                        row.avg_gap_days != null && `visit every ${Number(row.avg_gap_days)} days`,
+                        row.recent_soldouts != null && `sold out ${row.recent_soldouts} of last 3`,
+                      ].filter(Boolean).join(' · '),
+                    })}
+                    className="text-[var(--text-primary)] text-sm font-medium truncate text-left underline decoration-dotted decoration-[var(--text-muted2)] underline-offset-4">
+                    {row.store_name}
+                  </button>
                   {row.pipeline_status === 'dormant' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-[var(--text-gold)]/20 text-[var(--text-gold)] shrink-0">DORMANT</span>}
                   <ContactButtons phone={phones[row.store_id]} storeId={row.store_id} storeName={row.store_name} status={row.pipeline_status} />
                 </div>
@@ -360,6 +372,7 @@ export default function AllocationScreen() {
         </div>
       )}
 
+      {historyFor && <StoreHistoryModal {...historyFor} onClose={() => setHistoryFor(null)} />}
       {showConfirm && (
         <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col justify-end pb-20"
           onClick={() => setShowConfirm(false)}>
