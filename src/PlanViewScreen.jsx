@@ -10,6 +10,7 @@ import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 import ProspectVisitModal from './ProspectVisitModal'
 import { openStoreHistory } from './StoreHistoryModal'
+import { formatDuration } from './dbUtils'
 import { useSettings } from './useSettings'
 import { computeProposedQty } from './forecastMath'
 
@@ -1138,8 +1139,11 @@ export default function PlanViewScreen() {
     const stop = stops.find(s => s.store_id === id)
     return stop && !skippedStopIds.has(stop.id) && !completedStopIds.has(stop.id)
   })
-  const totalSeconds = depot?.id ? routeCost(depot.id, remainingOrder, (a, b) => cost(a, b, 'seconds'), false) : 0
-  const totalMeters = depot?.id ? routeCost(depot.id, remainingOrder, (a, b) => cost(a, b, 'meters'), false) : 0
+  // Totals include driving back to the depot at the end — same as the route optimiser and the
+  // Google Maps links (whose last leg returns to the depot). The time shown also adds 15 min per
+  // remaining stop, the same way the Schedule's day totals and the ETAs count it.
+  const totalSeconds = depot?.id ? routeCost(depot.id, remainingOrder, (a, b) => cost(a, b, 'seconds'), true) : 0
+  const totalMeters = depot?.id ? routeCost(depot.id, remainingOrder, (a, b) => cost(a, b, 'meters'), true) : 0
 
   const totalsBySku = {}
   stops.forEach(stop => {
@@ -1172,7 +1176,7 @@ export default function PlanViewScreen() {
           </select>
           <ChevronDown size={11} className="absolute right-0 top-0.5 text-[var(--text-muted)] pointer-events-none" />
         </div>
-        <span className="text-[var(--text-muted2)] text-xs flex-1 truncate">{Math.round(totalSeconds / 60)}m · {(totalMeters / 1000).toFixed(1)}km · {completedCount}/{orderedStops.length}</span>
+        <span className="text-[var(--text-muted2)] text-xs flex-1 truncate">{formatDuration(totalSeconds / 60 + remainingOrder.length * 15)} · {(totalMeters / 1000).toFixed(1)} km back to depot · {completedCount}/{orderedStops.length}</span>
       </div>
 
       {stops.length > 0 && (

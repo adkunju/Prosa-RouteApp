@@ -23,3 +23,12 @@ export function daysUntilDate(ymd) {
   const t = new Date(); const today = new Date(t.getFullYear(), t.getMonth(), t.getDate())
   return Math.round((new Date(y, m - 1, d) - today) / 86400000)
 }
+
+// 86 → "1 hr 26 mins", 45 → "45 mins", 120 → "2 hrs"
+export function formatDuration(mins) {
+  const total = Math.max(0, Math.round(mins || 0))
+  const h = Math.floor(total / 60), m = total % 60
+  const hs = h ? `${h} ${h === 1 ? 'hr' : 'hrs'}` : ''
+  const ms = m || !h ? `${m} ${m === 1 ? 'min' : 'mins'}` : ''
+  return [hs, ms].filter(Boolean).join(' ')
+}

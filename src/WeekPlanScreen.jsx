@@ -9,6 +9,7 @@ import { fuzzyMatch } from './fuzzy'
 import { computeProposedQty, bearingFromDepot } from './forecastMath'
 import { Calendar, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Package, X, History } from 'lucide-react'
 import StoreHistoryModal from './StoreHistoryModal'
+import { formatDuration } from './dbUtils'
 
 const NUM_DAYS = 6
 const DAILY_BUDGET_MIN = 360 // 6 hours
@@ -45,14 +46,6 @@ function daysUntil(dateStr) {
   return Math.round((target - now) / 86400000)
 }
 
-function formatDuration(mins) {
-  const total = Math.round(mins)
-  const h = Math.floor(total / 60)
-  const m = total % 60
-  if (h === 0) return `${m} min`
-  if (m === 0) return `${h} hr`
-  return `${h} hr ${m} min`
-}
 
 export default function WeekPlanScreen() {
   const [loading, setLoading] = useState(true)
@@ -1029,7 +1022,7 @@ export default function WeekPlanScreen() {
                   {dayLabel(planDates[day] || dateForOffset(day))}
                 </span>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${overloaded ? 'bg-red-900/60 text-red-300' : 'bg-[var(--bg-input)] text-[var(--text-secondary)]'}`}>
-                  {formatDuration(mins)} · {dayKm[day] || 0} km · {stops.length} stops
+                  {formatDuration(mins)} · {dayKm[day] || 0} km back to depot · {stops.length} {stops.length === 1 ? 'stop' : 'stops'}
                   {overloaded && <AlertTriangle size={11} className="inline ml-1" />}
                 </span>
               </div>
