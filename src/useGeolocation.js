@@ -27,3 +27,19 @@ export function haversineKm(lat1, lng1, lat2, lng2) {
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
+
+// Google text search can return several shops with the same name (other branches).
+// When we know where the store is, take the result nearest to it — and only if it's
+// within maxKm, so a same-named shop across town is never picked by mistake.
+export function pickNearestPlace(places, lat, lng, maxKm = 1) {
+  if (!places?.length) return null
+  if (lat == null || lng == null || lat === '' || lng === '') return places[0]
+  let best = null, bestKm = Infinity
+  places.forEach(p => {
+    const la = p.location?.latitude, ln = p.location?.longitude
+    if (la == null || ln == null) return
+    const km = haversineKm(Number(lat), Number(lng), la, ln)
+    if (km < bestKm) { bestKm = km; best = p }
+  })
+  return bestKm <= maxKm ? best : null
+}

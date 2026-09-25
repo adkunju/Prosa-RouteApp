@@ -3,9 +3,11 @@ import { supabase } from './supabaseClient'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { TrendingUp, AlertTriangle, Clock } from 'lucide-react'
 
+// Whole calendar days from today (local) to a YYYY-MM-DD date
 function daysUntil(dateStr) {
-  const diff = Math.ceil((new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24))
-  return diff
+  const [y, m, d] = String(dateStr).slice(0, 10).split('-').map(Number)
+  const t = new Date(); t.setHours(0, 0, 0, 0)
+  return Math.round((new Date(y, m - 1, d) - t) / 86400000)
 }
 
 function DueBadge({ dateStr }) {

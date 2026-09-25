@@ -173,7 +173,7 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
   const [depot, setDepot] = useState(null)
   const [preview, setPreview] = useState(null)
   const [adding, setAdding] = useState(false)
-  const [prospectAdded, setProspectAdded] = useState(new Set())
+  const [prospectAdded, setProspectAdded] = useState(new Map()) // store id → plan id it was added to
   const [visitDate, setVisitDate] = useState(selectedDate || new Date().toLocaleDateString('en-CA'))
 
   useEffect(() => { (async () => {
@@ -254,17 +254,20 @@ function AddStopPanel({ planId, stops, selectedDate, onClose, onAdded }) {
     }
     const { data: existingStops } = await supabase.from('plan_stops').select('stop_order').eq('plan_id', targetPlanId).order('stop_order', { ascending: false }).limit(1)
     const maxOrder = existingStops?.[0]?.stop_order || 0
-    await supabase.from('plan_stops').insert({ plan_id: targetPlanId, store_id: store.id, stop_order: maxOrder + 1, notes: 'manual' })
+    const { error: insErr } = await supabase.from('plan_stops').insert({ plan_id: targetPlanId, store_id: store.id, stop_order: maxOrder + 1, notes: 'manual' })
     setAdding(null)
-    setProspectAdded(a => new Set([...a, store.id]))
+    if (insErr) { alert('Could not add visit: ' + insErr.message); return }
+    setProspectAdded(a => new Map(a).set(store.id, targetPlanId))
     onAdded()
   }
 
   async function removeProspect(store) {
-    const { data: plan } = await supabase.from('plans').select('id').eq('plan_date', visitDate).maybeSingle()
-    if (!plan) return
-    await supabase.from('plan_stops').delete().eq('plan_id', plan.id).eq('store_id', store.id)
-    setProspectAdded(a => { const n = new Set(a); n.delete(store.id); return n })
+    const planId = prospectAdded.get(store.id)
+    if (!planId) return
+    const { error } = await supabase.from('plan_stops').delete().eq('plan_id', planId).eq('store_id', store.id)
+      .is('visited_at', null) // never remove a stop that was already visited
+    if (error) { alert('Could not remove: ' + error.message); return }
+    setProspectAdded(a => { const n = new Map(a); n.delete(store.id); return n })
     onAdded()
   }
 
@@ -497,7 +500,7 @@ export default function PlanViewScreen() {
     const { data } = await supabase
       .from('plans')
       .select('plan_date, plan_stops(id)')
-      .gte('plan_date', new Date().toISOString().slice(0, 10))
+      .gte('plan_date', new Date().toLocaleDateString('en-CA'))
       .order('plan_date', { ascending: true })
       .limit(14)
     const todayStr = new Date().toLocaleDateString('en-CA')

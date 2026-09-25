@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { supabase } from './supabaseClient'
+import { pickNearestPlace } from './useGeolocation'
 import { RefreshCw, Loader2, CheckCircle } from 'lucide-react'
 
 const PLACES_KEY = import.meta.env.VITE_GOOGLE_PLACES_KEY
@@ -30,13 +31,17 @@ export default function BulkSyncPanel({ onClose }) {
           headers: {
             'Content-Type': 'application/json',
             'X-Goog-Api-Key': PLACES_KEY,
-            'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.currentOpeningHours,places.internationalPhoneNumber',
+            'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.currentOpeningHours,places.internationalPhoneNumber,places.location',
           },
-          body: JSON.stringify({ textQuery: `${store.name} ${store.address || ''}` }),
+          body: JSON.stringify({
+            textQuery: `${store.name} ${store.address || ''}`,
+            ...(store.lat != null && store.lng != null ? { locationBias: { circle: { center: { latitude: Number(store.lat), longitude: Number(store.lng) }, radius: 2000 } } } : {}),
+          }),
         })
         const data = await res.json()
         if (!data.places || data.places.length === 0) return { name: store.name, status: 'no match' }
-        place = data.places[0]
+        place = pickNearestPlace(data.places, store.lat, store.lng)
+        if (!place) return { name: store.name, status: 'no match near the store (skipped)' }
         placeId = place.id
       }
 
@@ -62,7 +67,7 @@ export default function BulkSyncPanel({ onClose }) {
     setResults([])
     setDone(false)
 
-    const { data: stores } = await supabase.from('stores').select('id, name, address, place_id')
+    const { data: stores } = await supabase.from('stores').select('id, name, address, place_id, lat, lng')
       .eq('is_active', true).eq('is_depot', false)
     const { data: allContacts } = await supabase.from('store_contacts').select('store_id, phone')
     const contactsByStore = {}

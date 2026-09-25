@@ -226,7 +226,16 @@ export default function SettingsScreen({ theme, setTheme }) {
         </div>
       </div>
 
-      <button onClick={() => supabase.auth.signOut()}
+      <button onClick={async () => {
+          await supabase.auth.signOut()
+          // Clear this account's data kept on the phone (hand-added schedule stores, a
+          // pending call prompt, saved screens). Device settings like theme stay.
+          try {
+            sessionStorage.clear()
+            ;['prosa_schedule_manual', 'prosa_pending_call'].forEach(k => localStorage.removeItem(k))
+          } catch { /* storage blocked — nothing to clear */ }
+          window.location.reload() // drop anything still held in memory
+        }}
         className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 flex items-center justify-between hover:bg-[var(--bg-input)]/40 transition-colors mt-2">
         <span className="flex items-center gap-3 text-red-400 text-sm font-medium">
           <LogOut size={18} /> Sign out

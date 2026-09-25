@@ -89,7 +89,6 @@ export default function WeekPlanScreen() {
   const [allStores, setAllStores] = useState([])
   const [showPickupDetail, setShowPickupDetail] = useState(false)
   const [resetting, setResetting] = useState(false)
-  const [stalePlans, setStalePlans] = useState([])
   const [pendingProduction, setPendingProduction] = useState(null)
   const [showSkipped, setShowSkipped] = useState(false)
   const [cacheRestored, setCacheRestored] = useState(false) // kept for compatibility; no longer blocks saving
@@ -124,12 +123,6 @@ export default function WeekPlanScreen() {
 
     const todayStr = localToday()
     const localDateStr = todayStr
-    const { data: existingPlans } = await supabase.from('plans')
-      .select('plan_date, plan_stops(store_id)')
-      .eq('user_id', user.id)
-      .gte('plan_date', planDates[0] || todayStr)
-      .lt('plan_date', todayStr)
-    setStalePlans(existingPlans || [])
 
     const [{ data: forecast }, { data: stores }, { data: matrix }, { data: batches }, { used: consumedByBatch }] = await Promise.all([
       supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
@@ -680,6 +673,7 @@ export default function WeekPlanScreen() {
       setHasUnsavedChanges(true)
     }
     const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return fail('connecting', 'no connection')
 
     const dates = []
     for (let d = 0; d < NUM_DAYS; d++) dates.push(planDates[d] || dateForOffset(d))
@@ -869,14 +863,11 @@ export default function WeekPlanScreen() {
           hrs/day
         </span>
         {(() => {
-          const today = new Date().toISOString().slice(0, 10)
-          const weekStart = planDates[0] || today
-          const stale = stalePlans.some(p => p.plan_date >= weekStart && p.plan_date < today && p.plan_stops?.length > 0)
           return (
             <>
             <button onClick={() => setConfirmReset(true)} disabled={resetting}
-              className={`text-xs disabled:opacity-50 transition-colors font-medium ${stale ? 'text-red-400 hover:text-red-300' : 'text-[var(--text-muted2)] hover:text-[var(--text-primary)]'}`}>
-              {resetting ? 'Resetting...' : stale ? '⚠ Reset & recompute' : 'Reset & recompute'}
+              className="text-xs disabled:opacity-50 transition-colors font-medium text-[var(--text-muted2)] hover:text-[var(--text-primary)]">
+              {resetting ? 'Resetting...' : 'Reset & recompute'}
             </button>
             <button onClick={() => { setAddStoreQuery(''); setAddStoreQtys({}); setAddStoreDay(0); setShowAddStore(true) }}
               className="text-[var(--accent)] text-xs font-medium hover:opacity-80 transition-colors ml-2">
@@ -1118,7 +1109,7 @@ export default function WeekPlanScreen() {
         })}
       </div>
 
-      {!loading && dueStores.length > 0 && (
+      {!loading && (dueStores.length > 0 || pickupDue.length > 0) && (
         <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
           {saveError && <p className="text-red-400 text-xs mb-2">{saveError}</p>}
           <button

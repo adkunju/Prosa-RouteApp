@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { syncMatrix } from './matrixUtils'
-import { useGeolocation, haversineKm } from './useGeolocation'
+import { useGeolocation, haversineKm, pickNearestPlace } from './useGeolocation'
 import { X, Search, Loader2, Phone, MessageCircle, Trash2, Plus, Clock, MapPin, RefreshCw, Truck, Star } from 'lucide-react'
 import { openWhatsApp, startCall as startContactCall } from './ContactButtons'
 import { contactLabel, AddContactForm } from './contactUtils'
@@ -114,11 +114,15 @@ export default function StoreDetailModal({ store, onClose, onSaved }) {
             'X-Goog-Api-Key': PLACES_KEY,
             'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.currentOpeningHours,places.internationalPhoneNumber,places.location',
           },
-          body: JSON.stringify({ textQuery: `${store.name} ${store.address || ''}` }),
+          body: JSON.stringify({
+            textQuery: `${store.name} ${store.address || ''}`,
+            ...(store.lat != null && store.lng != null ? { locationBias: { circle: { center: { latitude: Number(store.lat), longitude: Number(store.lng) }, radius: 2000 } } } : {}),
+          }),
         })
         const data = await res.json()
         if (!data.places || data.places.length === 0) throw new Error('No match found on Google')
-        place = data.places[0]
+        place = pickNearestPlace(data.places, store.lat, store.lng)
+        if (!place) throw new Error("No shop with this name found near the store's saved location — search for the correct location below to pick it")
         placeId = place.id
       }
 
