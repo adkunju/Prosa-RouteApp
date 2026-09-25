@@ -336,14 +336,6 @@ export default function WeekPlanScreen() {
       ...zeroStockStores.map(s => ({ ...s, skipReason: 'No stock available today' })),
       ...overflow.map(s => ({ ...s, skipReason: 'No gap in time budget' })),
     ])
-    // Ignore saved assignments from before today — they're stale and would
-    // override the fresh computation with yesterday's plan.
-    const staleIds = new Set()
-    ;(existingPlans || []).filter(p => p.plan_date < todayStr).forEach(p => {
-      ;(p.plan_stops || []).forEach(ps => staleIds.add(ps.store_id))
-    })
-    stores_to_assign.forEach(s => { if (staleIds.has(s.store_id)) delete assign[s.store_id] })
-
     // Put stores added by hand back on their day (drop ones whose day has passed)
     const manual = readManual()
     const finalDue = stores_due.filter(s => s.skuReqs.some(r => r.qty > 0))
