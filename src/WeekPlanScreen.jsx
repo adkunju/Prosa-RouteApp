@@ -334,11 +334,14 @@ export default function WeekPlanScreen() {
     setMatrixMap(matrixMap)
     setMatrixMeters(metersMap)
     setDepotId(depot.id)
+    // Same order as stock is handed out: active before dormant, most overdue first, bigger orders first
+    const wanted = st => st.skuReqs.reduce((n, r) => n + (r.requested ?? r.qty ?? 0), 0)
     setUnscheduled([
       ...zeroStockStores.map(s => ({ ...s, skipReason: s.dormant ? 'Dormant — served after active stores; no stock left' : 'No stock available today' })),
       ...overflow.map(s => ({ ...s, skipReason: 'No gap in time budget' })),
       ...zeroPickups.map(s => ({ ...s, skipReason: s.dormant ? 'Dormant depot pickup — no stock left' : 'No stock left — depot pickup' })),
-    ])
+    ].sort((a, b) => (a.dormant ? 1 : 0) - (b.dormant ? 1 : 0)
+      || (a.due_date || '').localeCompare(b.due_date || '') || wanted(b) - wanted(a)))
     // Put stores added by hand back on their day (drop ones whose day has passed)
     const manual = readManual()
     const finalDue = stores_due.filter(s => s.skuReqs.some(r => r.qty > 0))
@@ -1138,9 +1141,10 @@ export default function WeekPlanScreen() {
               <div key={s.store_id} className="py-3 border-t border-[var(--bg-input)]/40">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <div className="text-[var(--text-primary)] text-sm font-medium">{s.name}</div>
+                    <button onClick={() => setHistoryFor({ storeId: s.store_id, storeName: s.name })}
+                      className="text-left text-[var(--text-primary)] text-sm font-medium hover:text-[var(--text-accent)]">{s.name}</button>
                     <div className="text-[var(--text-muted2)] text-xs mt-0.5">
-                      {s.skuReqs.map(r => `${r.name}: ${r.qty}`).join(' · ')} · due {s.due_date}
+                      {s.skuReqs.map(r => `${r.name}: ${r.requested ?? r.qty}`).join(' · ')} · due {s.due_date}
                     </div>
                     <div className="text-[var(--text-gold)] text-xs mt-1">{s.skipReason}</div>
                   </div>
@@ -1388,7 +1392,8 @@ export default function WeekPlanScreen() {
             </div>
             {pickupDue.map(s => (
               <div key={s.store_id} className="py-2 border-t border-[var(--bg-input)]/40">
-                <div className="text-[var(--text-secondary)] text-sm">{s.name}</div>
+                <button onClick={() => setHistoryFor({ storeId: s.store_id, storeName: s.name })}
+                  className="text-left text-[var(--text-secondary)] text-sm hover:text-[var(--text-accent)]">{s.name}</button>
                 <div className="flex flex-wrap gap-1.5 mt-1.5">
                   {s.skuReqs.map(r => {
                     const key = `${s.store_id}-${r.sku_id}`
