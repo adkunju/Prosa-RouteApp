@@ -182,6 +182,7 @@ export default function WeekPlanScreen() {
           name: r.store_name,
           service_minutes: store?.service_minutes || 15,
           is_pickup: !!store?.is_pickup,
+          dormant: r.pipeline_status === 'dormant',
           due_date: r.next_visit_due,
           bearing: store ? bearingFromDepot(depot.lat, depot.lng, store.lat, store.lng) : 0,
           skuReqs: [],
@@ -239,11 +240,15 @@ export default function WeekPlanScreen() {
     })
     // a hand-added store that's also due by forecast is handled once, as hand-added
     for (let i = stores_due.length - 1; i >= 0; i--) if (manualIds.has(stores_due[i].store_id)) stores_due.splice(i, 1)
-    // When stock is short, the most overdue stores are served first (then the bigger orders);
-    // stores due later are the ones left out.
+    // When stock is short, the most overdue ACTIVE stores are served first (then the bigger orders);
+    // stores due later are the ones left out. Route stores and depot pickups (Moolans) share
+    // one queue, so a pickup due tomorrow isn't starved by a route store due in 3 days.
     const reqTotal = st => st.skuReqs.reduce((n, r) => n + (r.qty || 0), 0)
-    stores_due.sort((a, b) => (a.due_date || '').localeCompare(b.due_date || '') || reqTotal(b) - reqTotal(a))
-    stores_due.forEach(s => {
+    // Dormant stores come after every active store (they're served only if stock is left).
+    const queue = [...stores_due, ...pickupStores.filter(p => !p.is_d2c)]
+      .sort((a, b) => (a.dormant ? 1 : 0) - (b.dormant ? 1 : 0)
+        || (a.due_date || '').localeCompare(b.due_date || '') || reqTotal(b) - reqTotal(a))
+    queue.forEach(s => {
       s.skuReqs = s.skuReqs.map(r => {
         const avail = runningStock[r.sku_id] ?? 0
         const qty = Math.min(r.qty, avail)
@@ -251,16 +256,9 @@ export default function WeekPlanScreen() {
         return { ...r, qty, requested: r.qty }
       })
     })
+    // Pickups that wanted stock but got none are listed with the skipped stores
+    const zeroPickups = pickupStores.filter(p => !p.is_d2c && p.skuReqs.every(r => r.qty === 0) && p.skuReqs.some(r => (r.requested || 0) > 0))
 
-    // Ration pickup stores from remaining stock after delivery stores (most overdue first)
-    pickupStores.filter(p => !p.is_d2c).sort((a, b) => (a.due_date || '').localeCompare(b.due_date || '')).forEach(s => {
-      s.skuReqs = s.skuReqs.map(r => {
-        const avail = runningStock[r.sku_id] ?? 0
-        const qty = Math.min(r.qty, avail)
-        runningStock[r.sku_id] = Math.max(0, avail - qty)
-        return { ...r, qty, requested: r.qty }
-      })
-    })
     setPickupDue([...pickupStores].sort((a, b) => (b.is_d2c ? 1 : 0) - (a.is_d2c ? 1 : 0)))
 
     // Split: zero-stock stores go to skipped popup, deliverable get routed
@@ -337,8 +335,9 @@ export default function WeekPlanScreen() {
     setMatrixMeters(metersMap)
     setDepotId(depot.id)
     setUnscheduled([
-      ...zeroStockStores.map(s => ({ ...s, skipReason: 'No stock available today' })),
+      ...zeroStockStores.map(s => ({ ...s, skipReason: s.dormant ? 'Dormant — served after active stores; no stock left' : 'No stock available today' })),
       ...overflow.map(s => ({ ...s, skipReason: 'No gap in time budget' })),
+      ...zeroPickups.map(s => ({ ...s, skipReason: s.dormant ? 'Dormant depot pickup — no stock left' : 'No stock left — depot pickup' })),
     ])
     // Put stores added by hand back on their day (drop ones whose day has passed)
     const manual = readManual()
@@ -1146,6 +1145,10 @@ export default function WeekPlanScreen() {
                     <div className="text-[var(--text-gold)] text-xs mt-1">{s.skipReason}</div>
                   </div>
                   <div className="shrink-0">
+                    {s.is_pickup ? (
+                      <button onClick={() => { setShowSkipped(false); setShowPickupDetail(true) }}
+                        className="bg-[var(--accent)] text-white text-xs rounded-xl px-3 py-2">Set qty</button>
+                    ) : (
                     <select defaultValue=""
                       onChange={e => {
                         const day = Number(e.target.value)
@@ -1165,6 +1168,7 @@ export default function WeekPlanScreen() {
                         </option>
                       ))}
                     </select>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1199,7 +1203,7 @@ export default function WeekPlanScreen() {
                     .filter(s => !scheduledIds.has(s.id) && !unscheduledIds.has(s.id))
                     .map(s => ({ store_id: s.id, name: s.name, skipReason: null, due_date: null, skuReqs: [] }))
 
-                  const allCandidates = [...unscheduled, ...otherStores]
+                  const allCandidates = [...unscheduled.filter(s => !s.is_pickup), ...otherStores]
                   const q = addStoreQuery.trim()
                   const candidates = q
                     ? allCandidates.filter(s => fuzzyMatch(q, s.name))
