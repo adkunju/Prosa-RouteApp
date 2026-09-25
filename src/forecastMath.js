@@ -32,10 +32,11 @@ export function computeProposedQty(row) {
   const sigma = Number(rate_stddev) || 0
   const qty = rate * days + z * sigma * Math.sqrt(days)
   let proposed = Math.max(0, Math.ceil(qty))
-  // Sold out (nothing returned) on the latest visit AND on 2 of the last 3: the store may sell more than it
-  // has been given, so try one extra pack. Not for depot pickups (Moolans) — their returns
+  // The last 2 SETTLED deliveries (visited on/after their expiry, so unsold packs would have
+  // come back) both came back empty: the store may sell more than it's given — try one extra pack.
+  // Newer deliveries still on the shelf don't count yet. Not for depot pickups (Moolans) — their returns
   // aren't recorded, so "sold out" can't be told apart from "no returns logged".
-  const soldOutBoost = proposed > 0 && !row.is_pickup && row.last_soldout === true && Number(row.recent_soldouts) >= 2
+  const soldOutBoost = proposed > 0 && !row.is_pickup && Number(row.recent_soldouts) >= 2
   if (soldOutBoost) proposed += 1
   return { proposed, soldOutBoost, z: z.toFixed(2), criticalRatio: (criticalRatio * 100).toFixed(0) }
 }
