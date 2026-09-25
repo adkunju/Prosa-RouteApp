@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient'
 import DeliveryConfirmed from './DeliveryConfirmed'
 import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
 import { fetchMatrix } from './matrixUtils'
-import { notifyStockChanged } from './stockUtils'
+import { notifyStockChanged, splitAcrossBatches, batchErrorText } from './stockUtils'
 import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
@@ -143,11 +143,12 @@ function MarkVisitedForm({ stop, onDone }) {
       <div className="flex gap-2">
         <button onClick={async () => {
           setSaving(true)
-          await supabase.from('plan_stops').update({
+          const { error } = await supabase.from('plan_stops').update({
             visited_at: new Date().toISOString(),
             visit_remark: remark || null,
           }).eq('id', stop.id)
           setSaving(false)
+          if (error) { alert('Visit was NOT saved: ' + error.message); return }
           onDone()
         }} disabled={saving}
           className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors">
@@ -467,6 +468,7 @@ export default function PlanViewScreen() {
   const [completeForm, setCompleteForm] = useState({})
   const [completing, setCompleting] = useState(false)
   const [completeError, setCompleteError] = useState('')
+  const [priceDefaults, setPriceDefaults] = useState({ last: {}, store: {} })
   const [reminder, setReminder] = useState(EMPTY_REMINDER)
   const [deliveryDone, setDeliveryDone] = useState(null) // shows the 'Delivery confirmed' popup
   const [toast, setToast] = useState('')
@@ -542,7 +544,7 @@ export default function PlanViewScreen() {
 
     const { data } = await supabase
       .from('plan_stops')
-      .select('id, stop_order, store_id, locked, stores(id, name, pipeline_status, place_id, lat, lng), requirements(id, sku_id, proposed_qty, approved_qty, skus(name, shelf_life_days, min_delivery_qty))')
+      .select('id, stop_order, store_id, locked, visited_at, stores(id, name, pipeline_status, place_id, lat, lng), requirements(id, sku_id, proposed_qty, approved_qty, skus(name, shelf_life_days, min_delivery_qty))')
       .eq('plan_id', plan.id)
       .order('stop_order')
 
@@ -564,7 +566,7 @@ export default function PlanViewScreen() {
       const completedByPlan = new Set((existingDL || []).map(d => d.plan_stop_id))
       const deliveredStoreIds = new Set((quickDL || []).map(d => d.store_id))
       setCompletedStopIds(new Set(
-        withReqs.filter(s => completedByPlan.has(s.id) || deliveredStoreIds.has(s.store_id)).map(s => s.id)
+        withReqs.filter(s => completedByPlan.has(s.id) || deliveredStoreIds.has(s.store_id) || s.visited_at).map(s => s.id)
       ))
     } else {
       setCompletedStopIds(new Set())
@@ -807,9 +809,15 @@ export default function PlanViewScreen() {
   function batchesForSku(skuId) {
     return batches.filter(b => {
       if (b.sku_id !== skuId) return false
-      if (b.expires_on < today()) return false
+      if (b.expires_on <= today()) return false // sellable only while today < expires_on
       return batchAvail(b) > 0
     })
+  }
+
+  // How a line's delivered qty will come out of stock (chosen batch first, then oldest)
+  function lineSplit(skuId, line) {
+    const avail = batchesForSku(skuId).map(b => ({ id: b.id, produced_on: b.produced_on, avail: batchAvail(b) }))
+    return splitAcrossBatches(avail, line?.batch_id, line?.qty_delivered)
   }
 
   async function openCompleteForm(stop) {
@@ -861,6 +869,7 @@ export default function PlanViewScreen() {
       return updated
     })
     setAllSkus(skus || [])
+    setPriceDefaults({ last: lastPriceMap, store: storePriceMap })
 
     const grouped = {}
     ;(prior || []).forEach(l => {
@@ -929,7 +938,8 @@ export default function PlanViewScreen() {
     if (!sku) return
     const skuBatches = batchesForSku(skuId)
     setExtraReqs(e => [...e, { sku_id: skuId, name: sku.name }])
-    setCompleteForm(f => ({ ...f, [skuId]: { qty_delivered: 0, returns: [{ dl_id: '', qty: '' }], batch_id: skuBatches[0]?.id || '' } }))
+    const price = priceDefaults.last[skuId] ?? priceDefaults.store[skuId] ?? sku.unit_price ?? ''
+    setCompleteForm(f => ({ ...f, [skuId]: { qty_delivered: 0, returns: [{ dl_id: '', qty: '' }], batch_id: skuBatches[0]?.id || '', unit_price: price } }))
     setAddSkuOpen(false)
   }
 
@@ -945,6 +955,7 @@ export default function PlanViewScreen() {
       const line = completeForm[r.sku_id]
       if (!line) return false
       if (Number(line.qty_delivered) > 0 && !line.batch_id) return false
+      if (Number(line.qty_delivered) > 0 && lineSplit(r.sku_id, line).short > 0) return false
       if ((line.returns || []).some(r => Number(r.qty) > 0 && !r.dl_id)) return false
       return true
     })
@@ -978,22 +989,25 @@ export default function PlanViewScreen() {
     ])].filter(id => completeForm[id])
 
     // All delivery lines in ONE request — it either fully saves or not at all
-    const lineRows = skuIds.map(skuId => {
+    // One delivery line per batch used: if the chosen batch runs out, the rest comes from the
+    // oldest other batch (shown in the form before confirming)
+    const lineRows = skuIds.flatMap(skuId => {
       const line = completeForm[skuId]
-      return {
+      const base = {
         plan_stop_id: stop.is_pickup ? null : stop.id,
         sku_id: skuId,
-        batch_id: line.batch_id || null,
-        qty_delivered: Number(line.qty_delivered) || 0,
         delivered_on: dateStr,
         store_id: stop.store_id,
         unit_price: line.unit_price !== '' && line.unit_price != null && !isNaN(Number(line.unit_price)) ? Number(line.unit_price) : null,
         is_offer: line.is_offer || false,
         store_balance: line.store_balance !== '' && line.store_balance !== undefined ? Number(line.store_balance) : null,
       }
+      const qty = Number(line.qty_delivered) || 0
+      if (qty <= 0) return [{ ...base, batch_id: line.batch_id || null, qty_delivered: 0 }]
+      return lineSplit(skuId, line).parts.map((p, i) => ({ ...base, batch_id: p.batch_id, qty_delivered: p.qty, store_balance: i === 0 ? base.store_balance : null }))
     })
     const { data: inserted, error: lErr } = await supabase.from('delivery_lines').insert(lineRows).select('id')
-    if (lErr) return fail('Could not save delivery: ' + lErr.message + '. Nothing was recorded — try again.')
+    if (lErr) { loadBatches(); return fail('Could not save delivery: ' + batchErrorText(lErr.message) + ' Nothing was recorded — try again.') }
 
     // Returns belong to the EARLIER delivery that carried the stock, never to the new line.
     const returnRows = skuIds.flatMap(skuId => (completeForm[skuId].returns || [])
@@ -1375,6 +1389,9 @@ export default function PlanViewScreen() {
                           const { error: e3 } = await supabase.from('delivery_lines').delete().in('id', dls.map(d => d.id))
                           if (e3) { setToast('Undo failed — check your connection and try again'); return }
                         }
+                        if (!String(stop.id).startsWith('pickup-')) {
+                          await supabase.from('plan_stops').update({ visited_at: null, visit_remark: null }).eq('id', stop.id)
+                        }
                         setCompletedStopIds(s => { const n = new Set(s); n.delete(stop.id); return n })
                         loadBatches()
                         notifyStockChanged()
@@ -1536,6 +1553,12 @@ export default function PlanViewScreen() {
                         value={line.qty_delivered ?? ''}
                         onChange={e => setCompleteForm(f => ({ ...f, [req.sku_id]: { ...f[req.sku_id], qty_delivered: e.target.value } }))}
                         className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+                      {Number(line.qty_delivered) > 0 && line.batch_id && (() => {
+                        const sp = lineSplit(req.sku_id, line)
+                        if (sp.short > 0) return <p className="text-red-400 text-[11px] mt-1">Only {Number(line.qty_delivered) - sp.short} in stock for this product — fix the quantity or log production</p>
+                        if (sp.parts.length > 1) return <p className="text-[var(--text-gold)] text-[11px] mt-1">Batch runs out: {sp.parts.map(p => `${p.qty} from ${p.produced_on.slice(5)}`).join(' + ')}</p>
+                        return null
+                      })()}
                     </div>
                     <div>
                       <label className="text-[var(--text-muted)] text-xs mb-1 block">Returned (total)</label>

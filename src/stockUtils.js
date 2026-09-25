@@ -30,3 +30,27 @@ export function notifyStockChanged() {
   sessionStorage.removeItem('prosa_schedule_cache')
   window.dispatchEvent(new CustomEvent('prosa:stock_changed'))
 }
+
+// Split a delivery of `qty` across batches: the chosen batch first, then the oldest other
+// batches with stock (first-in first-out). batches: [{ id, produced_on, avail }]
+// Returns { parts: [{ batch_id, produced_on, qty }], short } — short > 0 means not enough stock.
+export function splitAcrossBatches(batches, selectedId, qty) {
+  let need = Math.max(0, Number(qty) || 0)
+  const ordered = [
+    ...batches.filter(b => b.id === selectedId),
+    ...batches.filter(b => b.id !== selectedId).sort((a, b) => a.produced_on.localeCompare(b.produced_on)),
+  ]
+  const parts = []
+  for (const b of ordered) {
+    if (need <= 0) break
+    const take = Math.min(need, Math.max(0, b.avail))
+    if (take > 0) { parts.push({ batch_id: b.id, produced_on: b.produced_on, qty: take }); need -= take }
+  }
+  return { parts, short: need }
+}
+
+// Friendly text for a database "batch over" refusal
+export function batchErrorText(msg) {
+  const m = /BATCH_OVER: (.*)/.exec(msg || '')
+  return m ? `Not enough stock — ${m[1]}. Refresh and try again.` : msg
+}

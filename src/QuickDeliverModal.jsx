@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import DeliveryConfirmed from './DeliveryConfirmed'
 import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
-import { fetchBatchUsage, notifyStockChanged } from './stockUtils'
+import { fetchBatchUsage, notifyStockChanged, splitAcrossBatches, batchErrorText } from './stockUtils'
 import { X, Search, Loader2 } from 'lucide-react'
 
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
@@ -66,6 +66,9 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
   function batchesFor(skuId) {
     return batches.filter(b => b.sku_id === skuId && b.available > 0 && b.expires_on > today())
   }
+
+  const qdSplit = (skuId, l) => splitAcrossBatches(
+    batchesFor(skuId).map(b => ({ id: b.id, produced_on: b.produced_on, avail: b.available })), l?.batch_id, l?.qty)
 
   function setLine(skuId, patch) {
     setLines(l => ({ ...l, [skuId]: { ...l[skuId], ...patch } }))
@@ -157,24 +160,32 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
     if (active.some(id => (lines[id]?.returns || []).some(r => Number(r.qty) > 0 && !r.dl_id))) {
       setSaveError('Pick which batch each return came from'); return
     }
+    // Every delivered product needs stock from a batch (else stock would never go down)
+    for (const id of active.filter(id => Number(lines[id]?.qty) > 0)) {
+      const sp = qdSplit(id, lines[id])
+      const name = skus.find(s => s.id === id)?.name || 'a product'
+      if (!lines[id]?.batch_id) { setSaveError(`Pick a batch for ${name}`); return }
+      if (sp.short > 0) { setSaveError(`Only ${Number(lines[id].qty) - sp.short} of ${name} in stock — fix the quantity`); return }
+    }
     setSaving(true)
     // 1. all delivery lines in one request
-    const lineRows = active.filter(id => Number(lines[id]?.qty) > 0).map(id => {
+    // one line per batch used (chosen batch first, then the oldest)
+    const lineRows = active.filter(id => Number(lines[id]?.qty) > 0).flatMap(id => {
       const l = lines[id]
-      return {
+      return qdSplit(id, l).parts.map((p, i) => ({
         store_id: store.id, plan_stop_id: null, sku_id: id,
-        batch_id: l.batch_id || null,
-        qty_delivered: Number(l.qty),
+        batch_id: p.batch_id,
+        qty_delivered: p.qty,
         unit_price: l.price === '' || l.price == null ? null : Number(l.price),
         is_offer: l.is_offer || false,
-        store_balance: l.store_balance !== '' && l.store_balance !== undefined ? Number(l.store_balance) : null,
+        store_balance: i === 0 && l.store_balance !== '' && l.store_balance !== undefined ? Number(l.store_balance) : null,
         delivered_on: dateStr,
-      }
+      }))
     })
     let inserted = []
     if (lineRows.length) {
       const { data, error } = await supabase.from('delivery_lines').insert(lineRows).select('id')
-      if (error) { setSaveError('Could not save: ' + error.message + '. Nothing was recorded — try again.'); setSaving(false); return }
+      if (error) { setSaveError('Could not save: ' + batchErrorText(error.message) + '. Nothing was recorded — try again.'); setSaving(false); return }
       inserted = data || []
     }
     // 2. returns — each linked to the EARLIER delivery the stock came from, never today's
@@ -201,9 +212,10 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
     }
     // If visit-only (no delivery) save remark to call_logs via plan_stops is not applicable
     // Record as a store note instead using a simple insert
-    if (remark.trim() && !Object.values(lines).some(l => Number(l?.qty) > 0)) {
-      // Pure visit — keep the note in the store's log
-      await supabase.from('call_logs').insert({ store_id: store.id, kind: 'visit', note: remark.trim(), called_at: new Date().toISOString() })
+    // The visit remark always goes into the store's log (delivery or not)
+    if (remark.trim()) {
+      const { error: rErr } = await supabase.from('call_logs').insert({ store_id: store.id, kind: 'visit', note: remark.trim(), called_at: new Date().toISOString() })
+      if (rErr) alert('Delivery saved, but the remark did not: ' + rErr.message)
     }
     const remErr = await saveReminder(store.id, reminder)
     if (remErr) alert('Delivery saved, but the call reminder did not: ' + remErr)
@@ -330,12 +342,18 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
                   <label className="text-[var(--text-muted)] text-xs mb-1 block">Batch</label>
                   <select value={l.batch_id || ''} onChange={e => setLine(sk.id, { batch_id: e.target.value })}
                     className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]">
-                    <option value="">No batch</option>
+                    <option value="">Select batch...</option>
                     {avail.map(b => (
                       <option key={b.id} value={b.id}>{b.produced_on} · {b.available} pcs left</option>
                     ))}
                   </select>
-                  {avail.length === 0 && <p className="text-[var(--text-gold)] text-xs mt-1">No stock in hand for this product</p>}
+                  {avail.length === 0 && <p className="text-red-400 text-xs mt-1">No stock in hand for this product — log production first</p>}
+                  {l.batch_id && (() => {
+                    const sp = qdSplit(sk.id, l)
+                    if (sp.short > 0) return <p className="text-red-400 text-[11px] mt-1">Only {Number(l.qty) - sp.short} in stock for this product</p>
+                    if (sp.parts.length > 1) return <p className="text-[var(--text-gold)] text-[11px] mt-1">Batch runs out: {sp.parts.map(p => `${p.qty} from ${p.produced_on.slice(5)}`).join(' + ')}</p>
+                    return null
+                  })()}
                 </div>
               )}
               <div className="mt-2 flex flex-col gap-2">

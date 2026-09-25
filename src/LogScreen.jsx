@@ -2,14 +2,14 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 import DeliveryConfirmed from './DeliveryConfirmed'
 import { Plus, X, CheckCircle, Trash2, ChevronDown, Save, PackageMinus } from 'lucide-react'
-import { notifyStockChanged, reasonLabel } from './stockUtils'
+import { notifyStockChanged, reasonLabel, fetchBatchUsage, splitAcrossBatches, batchErrorText } from './stockUtils'
 import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
 import StockAdjustModal from './StockAdjustModal'
 
 const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 const today = () => localDate()
 function emptyLine(id) {
-  return { id, sku_id: '', type: 'sale', produced_on: '', qty: '' }
+  return { id, sku_id: '', type: 'sale', produced_on: '', qty: '', src_dl: '' }
 }
 
 export default function LogScreen() {
@@ -37,7 +37,7 @@ export default function LogScreen() {
   const [showAdjust, setShowAdjust] = useState(false)
 
   async function load() {
-    const [{ data: st }, { data: sk }, { data: ba }, { data: rv }, { data: adj }] = await Promise.all([
+    const [{ data: st }, { data: sk }, { data: ba }, { data: rv }, { data: adj }, { used }] = await Promise.all([
       supabase.from('stores').select('id, name').eq('is_active', true).eq('is_depot', false).order('name'),
       supabase.from('skus').select('id, name').eq('is_active', true).order('name'),
       supabase.from('production_batches').select('id, sku_id, produced_on, expires_on, qty').gt('expires_on', today()).order('expires_on'),
@@ -46,16 +46,17 @@ export default function LogScreen() {
         .order('delivered_on', { ascending: false }).limit(40),
       supabase.from('stock_adjustments').select('id, qty, reason, notes, adjusted_on, skus(name), production_batches(produced_on)')
         .order('adjusted_on', { ascending: false }).order('created_at', { ascending: false }).limit(40),
+      fetchBatchUsage(),
     ])
     if (st) setStores(st)
     if (sk) setSkus(sk)
-    if (ba) setBatches(ba)
+    if (ba) setBatches(ba.map(b => ({ ...b, avail: b.qty - (used[b.id] || 0) })))
     if (rv) setRecentVisits(rv)
     // Returns picked up at each visit — they're usually linked to an OLDER delivery line
     // (the batch that expired), so fetch them by date and match on store + product + date.
     const oldest = rv?.length ? rv[rv.length - 1].delivered_on : today()
     const { data: vr } = await supabase.from('returns')
-      .select('id, qty_returned, returned_on, store_id, sku_id, produced_on, delivery_line_id')
+      .select('id, qty_returned, returned_on, store_id, sku_id, produced_on, delivery_line_id, skus(name), stores(name)')
       .gte('returned_on', oldest)
     setVisitReturns(vr || [])
     // Only show adjustments within the date span the visit list covers (older ones are on the Production screen)
@@ -78,12 +79,36 @@ export default function LogScreen() {
   function setLineField(id, field, value) {
     setLines(l => l.map(x => x.id === id ? { ...x, [field]: value } : x))
   }
-  function batchesForSku(sku_id) { return batches.filter(b => b.sku_id === sku_id) }
+  function batchesForSku(sku_id) { return batches.filter(b => b.sku_id === sku_id && (b.avail ?? 1) > 0) }
 
   function lineValid(line) {
-    if (!line.sku_id || !line.qty || !line.produced_on) return false
-    return true
+    if (!line.sku_id || !line.qty) return false
+    if (line.type === 'sale') return !!line.produced_on
+    return !!line.src_dl // returns: which earlier delivery (batch) came back
   }
+  // Sale lines: the chosen batch first, then the oldest other batches (FIFO)
+  function saleSplit(line) {
+    const list = batchesForSku(line.sku_id)
+    const chosen = list.find(b => b.produced_on === line.produced_on)
+    return splitAcrossBatches(list.map(b => ({ id: b.id, produced_on: b.produced_on, avail: b.avail })), chosen?.id, line.qty)
+  }
+
+  // Earlier deliveries of each product to the chosen store (the sources a return can come from)
+  const [sources, setSources] = useState({}) // sku_id -> [{id, delivered_on, qty_delivered, produced_on}]
+  useEffect(() => {
+    if (!store_id) { setSources({}); return }
+    let off = false
+    supabase.from('delivery_lines').select('id, sku_id, delivered_on, qty_delivered, production_batches(produced_on)')
+      .eq('store_id', store_id).gt('qty_delivered', 0).lt('delivered_on', date)
+      .order('delivered_on', { ascending: false }).limit(60)
+      .then(({ data }) => {
+        if (off) return
+        const m = {}
+        ;(data || []).forEach(d => { (m[d.sku_id] = m[d.sku_id] || []).push({ ...d, produced_on: d.production_batches?.produced_on }) })
+        setSources(m)
+      })
+    return () => { off = true }
+  }, [store_id, date])
   // Deliveries of this product to this store up to the visit date — the batches a return can come from
   async function loadPriorDeliveries(line) {
     const storeId = line.store_id || line.plan_stops?.store_id
@@ -109,6 +134,10 @@ export default function LogScreen() {
     const newRetQty = Number(el.newReturn.qty) || 0
     if (newRetQty > 0 && !el.newReturn.delivery_line_id) return setEditError('Pick which batch the new return came from')
     setEditSaving(true)
+    const skuChanged = el.sku_id !== el.orig_sku_id
+    if (skuChanged && Number(el.qty_delivered) > 0 && (!el.produced_on || el.produced_on === el.orig_produced_on)) {
+      return setEditError('You changed the product — pick the batch it came from')
+    }
     // Only change the batch if a different production date was picked
     let batchId = el.batch_id || null
     if (el.produced_on && el.produced_on !== el.orig_produced_on) {
@@ -129,7 +158,7 @@ export default function LogScreen() {
       if (r._delete || q === 0) {
         const { error } = await supabase.from('returns').delete().eq('id', r.id)
         if (error) errs.push(error.message)
-      } else if (q !== r.orig_qty || r.delivery_line_id !== r.orig_dl) {
+      } else if (q !== r.orig_qty || r.delivery_line_id !== r.orig_dl || skuChanged) {
         const patch = { qty_returned: q, sku_id: el.sku_id }
         if (r.delivery_line_id !== r.orig_dl) {
           const src = el.priorDeliveries.find(d => d.id === r.delivery_line_id)
@@ -175,14 +204,23 @@ export default function LogScreen() {
     setConfirmDelete(null)
     setDeleting(line.id)
     const storeId = line.store_id || line.plan_stops?.store_id
-    const ids = (line.returns || []).map(r => r.id)
-    if (ids.length) await supabase.from('returns').delete().in('id', ids)
+    const errs = []
+    // Returns picked up LATER from this delivery belong to those later visits — keep them, just unlink
+    const later = (line.returns || []).filter(r => r.returned_on !== line.delivered_on).map(r => r.id)
+    if (later.length) { const { error } = await supabase.from('returns').update({ delivery_line_id: null }).in('id', later); if (error) errs.push(error.message) }
+    // Returns of this product picked up at THIS visit go with it
     if (storeId && line.sku_id) {
-      await supabase.from('returns').delete()
+      const { error } = await supabase.from('returns').delete()
         .eq('store_id', storeId).eq('sku_id', line.sku_id).eq('returned_on', line.delivered_on)
+      if (error) errs.push(error.message)
     }
-    const { error } = await supabase.from('delivery_lines').delete().eq('id', line.id)
-    if (error) window.console.error('delete failed', error)
+    const same = (line.returns || []).filter(r => r.returned_on === line.delivered_on).map(r => r.id)
+    if (same.length) await supabase.from('returns').delete().in('id', same)
+    if (!errs.length) {
+      const { error } = await supabase.from('delivery_lines').delete().eq('id', line.id)
+      if (error) errs.push(error.message)
+    }
+    if (errs.length) alert('Delete did not finish: ' + errs.join('; '))
     notifyStockChanged()
     await load()
     setDeleting(null)
@@ -217,30 +255,30 @@ export default function LogScreen() {
     if (!stop) { setSaveError('Could not create the store stop — check your connection'); setSaving(false); return }
 
     const errs = []
-    for (const line of lines) {
-      const batch = batchesForSku(line.sku_id).find(b => b.produced_on === line.produced_on)
-      if (line.type === 'sale') {
-        const { error } = await supabase.from('delivery_lines').insert({
-          plan_stop_id: stop.id, store_id, sku_id: line.sku_id,
-          batch_id: batch?.id || null,
-          qty_delivered: Number(line.qty), delivered_on: date,
-        })
-        if (error) errs.push(error.message)
-      } else {
-        const { data: dl, error } = await supabase.from('delivery_lines').insert({
-          plan_stop_id: stop.id, store_id, sku_id: line.sku_id,
-          batch_id: batch?.id || null,
-          qty_delivered: 0, delivered_on: date,
-        }).select('id').single()
-        if (error || !dl) { errs.push(error?.message || 'delivery line not created'); continue }
-        const { error: rErr } = await supabase.from('returns').insert({
-          delivery_line_id: dl.id, store_id, sku_id: line.sku_id,
-          qty_returned: Number(line.qty), returned_on: date,
-          produced_on: line.produced_on || null, produced_on_source: line.produced_on ? 'user' : null,
-          possible_stockout: false,
-        })
-        if (rErr) errs.push(rErr.message)
+    for (const line of lines.filter(l => l.type === 'sale')) {
+      if (saleSplit(line).short > 0) { setSaveError(`Not enough stock for ${skus.find(x => x.id === line.sku_id)?.name || 'a product'} — fix the quantity`); setSaving(false); return }
+    }
+    // Sales: one line per batch used, all in one request
+    const saleRows = lines.filter(l => l.type === 'sale').flatMap(line => saleSplit(line).parts.map(p => ({
+      plan_stop_id: stop.id, store_id, sku_id: line.sku_id, batch_id: p.batch_id, qty_delivered: p.qty, delivered_on: date,
+    })))
+    if (saleRows.length) {
+      const { error } = await supabase.from('delivery_lines').insert(saleRows)
+      if (error) { setSaveError('Nothing was saved: ' + batchErrorText(error.message)); setSaving(false); return }
+    }
+    // Returns: linked to the earlier delivery the stock came from (no empty placeholder line)
+    const returnRows = lines.filter(l => l.type === 'return').map(line => {
+      const src = line.src_dl !== 'none' ? (sources[line.sku_id] || []).find(x => x.id === line.src_dl) : null
+      return {
+        delivery_line_id: src ? src.id : null, store_id, sku_id: line.sku_id,
+        qty_returned: Number(line.qty), returned_on: date,
+        produced_on: src?.produced_on || null, produced_on_source: src?.produced_on ? 'user' : null,
+        possible_stockout: false, reason: src ? null : 'No matching delivery on record',
       }
+    })
+    if (returnRows.length) {
+      const { error } = await supabase.from('returns').insert(returnRows)
+      if (error) errs.push('returns: ' + error.message)
     }
 
     notifyStockChanged()
@@ -280,6 +318,18 @@ export default function LogScreen() {
   const grouped = recentVisits.reduce((acc, v) => {
     const d = v.delivered_on; if (!acc[d]) acc[d] = []; acc[d].push(v); return acc
   }, {})
+  // Returns picked up on a day with no delivery of that product to that store (return-only visits)
+  const lineKeys = new Set(recentVisits.map(l => visitKey(lineStoreId(l), l.sku_id, l.delivered_on)))
+  const orphanByDate = visitReturns.filter(r => !lineKeys.has(visitKey(r.store_id, r.sku_id, r.returned_on))).reduce((acc, r) => {
+    const d = r.returned_on; (acc[d] = acc[d] || []).push(r); if (!grouped[d]) grouped[d] = []; return acc
+  }, {})
+  async function deleteReturn(id) {
+    if (confirmDelete !== id) { setConfirmDelete(id); setTimeout(() => setConfirmDelete(c => (c === id ? null : c)), 3000); return }
+    setConfirmDelete(null); setDeleting(id)
+    const { error } = await supabase.from('returns').delete().eq('id', id)
+    if (error) alert('Could not delete: ' + error.message)
+    notifyStockChanged(); await load(); setDeleting(null)
+  }
   const adjByDate = adjustments.reduce((acc, a) => {
     const d = a.adjusted_on; if (!acc[d]) acc[d] = []; acc[d].push(a); if (!grouped[d]) grouped[d] = []; return acc
   }, {})
@@ -313,6 +363,23 @@ export default function LogScreen() {
           <div key={d}>
             <div className="text-[var(--text-muted2)] text-xs font-medium mb-2 uppercase tracking-wide">{d}</div>
             <div className="flex flex-col gap-2">
+              {(orphanByDate[d] || []).map(r => (
+                <div key={'ret' + r.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-3 border-l-2 border-[var(--text-amber)]/60">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[var(--text-primary)] text-sm font-medium truncate">{r.stores?.name || 'Store'}</div>
+                      <div className="text-[var(--text-muted)] text-xs mt-0.5">
+                        {r.skus?.name} · <span className="text-[var(--text-amber)]">↩ {r.qty_returned} returned</span>
+                        {r.produced_on && <span className="text-[var(--text-muted2)]"> · batch {r.produced_on}</span>}
+                      </div>
+                    </div>
+                    <button onClick={() => deleteReturn(r.id)} disabled={deleting === r.id}
+                      className={`shrink-0 transition-colors ${confirmDelete === r.id ? 'text-red-400 text-xs font-medium' : 'text-[var(--text-faint)] hover:text-red-400'}`}>
+                      {deleting === r.id ? '...' : confirmDelete === r.id ? 'Tap to delete' : <Trash2 size={15} />}
+                    </button>
+                  </div>
+                </div>
+              ))}
               {(adjByDate[d] || []).map(a => (
                 <div key={a.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-3 border-l-2 border-[var(--text-amber)]">
                   <div className="flex items-start justify-between gap-2">
@@ -353,6 +420,7 @@ export default function LogScreen() {
                       <button onClick={() => { setEditError(''); setEditingLine({
                           id: line.id,
                           sku_id: line.sku_id,
+                          orig_sku_id: line.sku_id,
                           batch_id: line.batch_id,
                           produced_on: line.production_batches?.produced_on || '',
                           orig_produced_on: line.production_batches?.produced_on || '',
@@ -560,7 +628,7 @@ export default function LogScreen() {
 
                   {/* Production date — dropdown for sale, manual entry for return */}
                   <div>
-                    <label className="text-[var(--text-muted)] text-xs mb-1 block">Production date *</label>
+                    <label className="text-[var(--text-muted)] text-xs mb-1 block">{line.type === 'sale' ? 'Batch *' : 'Came back from *'}</label>
                     {line.type === 'sale' ? (
                       <>
                         <div className="relative">
@@ -570,7 +638,7 @@ export default function LogScreen() {
                             <option value="">Select batch...</option>
                             {batchesForSku(line.sku_id).map(b => (
                               <option key={b.id} value={b.produced_on}>
-                                {b.produced_on} · expires {b.expires_on} · {b.qty} pcs
+                                {b.produced_on} · {b.avail} pcs left
                               </option>
                             ))}
                           </select>
@@ -581,11 +649,22 @@ export default function LogScreen() {
                         )}
                       </>
                     ) : (
-                      <input type="date" value={line.produced_on}
-                        onChange={e => setLineField(line.id, 'produced_on', e.target.value)}
-                        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                        placeholder="Date stock was produced" />
+                      <select value={line.src_dl} onChange={e => setLineField(line.id, 'src_dl', e.target.value)}
+                        disabled={!line.sku_id || !store_id}
+                        className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:opacity-50">
+                        <option value="">{store_id ? 'Which delivery came back?' : 'Pick the store first'}</option>
+                        {(sources[line.sku_id] || []).map(d => (
+                          <option key={d.id} value={d.id}>Batch {d.produced_on || '?'} · sent {d.delivered_on} ({d.qty_delivered} pcs)</option>
+                        ))}
+                        <option value="none">Not on record</option>
+                      </select>
                     )}
+                    {line.type === 'sale' && line.produced_on && Number(line.qty) > 0 && (() => {
+                      const sp = saleSplit(line)
+                      if (sp.short > 0) return <p className="text-red-400 text-[11px] mt-1">Only {Number(line.qty) - sp.short} in stock for this product</p>
+                      if (sp.parts.length > 1) return <p className="text-[var(--text-gold)] text-[11px] mt-1">Batch runs out: {sp.parts.map(p => `${p.qty} from ${p.produced_on.slice(5)}`).join(' + ')}</p>
+                      return null
+                    })()}
                   </div>
 
                   <div>
