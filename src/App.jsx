@@ -93,6 +93,13 @@ function SalesHub() {
 function Shell() {
   const [screen, setScreen] = useState('dashboard')
   const { theme, setTheme } = useTheme()
+  // Settings sections that need more room on desktop (the Price List table)
+  const [settingsWide, setSettingsWide] = useState(false)
+  useEffect(() => {
+    const fn = e => setSettingsWide(!!e.detail?.wide)
+    window.addEventListener('prosa:settings_wide', fn)
+    return () => window.removeEventListener('prosa:settings_wide', fn)
+  }, [])
   useEffect(() => {
     const go = e => {
       if (e.detail?.screen) {
@@ -160,7 +167,7 @@ function Shell() {
         {screen === 'delivery'  && <PlanViewScreen />}
         {screen === 'sales'     && <SalesHub />}
         {screen === 'settings'  && (
-          <div className="contents lg:flex lg:flex-1 lg:flex-col lg:overflow-hidden lg:w-full lg:max-w-3xl lg:mx-auto">
+          <div className={`contents lg:flex lg:flex-1 lg:flex-col lg:overflow-hidden lg:w-full lg:mx-auto ${settingsWide ? "lg:max-w-6xl" : "lg:max-w-3xl"}`}>
             <SettingsScreen theme={theme} setTheme={setTheme} />
           </div>
         )}
