@@ -10,7 +10,7 @@ import AddStoreModal from './AddStoreModal'
 import ContactButtons, { useStoreContacts } from './ContactButtons'
 import { Calendar, ChevronDown, Package, Zap, Gauge, Lock, Unlock, Save, Loader2, Navigation, CheckCircle, Circle, X, GripVertical, ChevronRight, ClipboardCheck } from 'lucide-react'
 import ProspectVisitModal from './ProspectVisitModal'
-import { openStoreHistory } from './StoreHistoryModal'
+import { openStoreHistory, directionsUrl } from './StoreHistoryModal'
 import { formatDuration } from './dbUtils'
 import { useSettings } from './useSettings'
 import { computeProposedQty } from './forecastMath'
@@ -1394,7 +1394,7 @@ export default function PlanViewScreen() {
                         {stop.stores.pipeline_status}
                       </span>
                     )}
-                    <ContactButtons phone={phones[stop.store_id]} storeId={stop.store_id} storeName={stop.stores?.name} status={stop.stores?.pipeline_status} />
+                    {isDesktop && <ContactButtons phone={phones[stop.store_id]} storeId={stop.store_id} storeName={stop.stores?.name} status={stop.stores?.pipeline_status} />}
                   </div>
                   <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0, effectiveStartMinutes)}</span>
                 </div>
@@ -1489,6 +1489,13 @@ export default function PlanViewScreen() {
                           className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs px-2 py-1.5 rounded-lg bg-[var(--bg-input)]/40 transition-colors">
                           Skip
                         </button>
+                        {!isDesktop && directionsUrl(stop.stores) && (
+                          // Driver: Google Maps directions straight to this shop
+                          <a href={directionsUrl(stop.stores)} target="_blank" rel="noopener noreferrer"
+                            className="ml-auto flex items-center gap-1.5 bg-[var(--accent)] text-white text-xs font-semibold rounded-lg px-3 py-1.5">
+                            <Navigation size={13} /> Directions
+                          </a>
+                        )}
                       </div>
                     )
                   )}

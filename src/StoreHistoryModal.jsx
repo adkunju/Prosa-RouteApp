@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from './supabaseClient'
 import { X, Navigation } from 'lucide-react'
+import ContactButtons, { useStoreContacts } from './ContactButtons'
 
 const fmt = ymd => { const [y, m, d] = ymd.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) }
 const short = n => (n || 'Item').replace(/^Prosa\s+/i, '')
@@ -18,7 +19,7 @@ export function StoreHistoryHost() {
 }
 
 // Google Maps directions to the store (exact shop when we have its Google place)
-function directionsUrl(st) {
+export function directionsUrl(st) {
   if (!st) return null
   const base = 'https://www.google.com/maps/dir/?api=1&travelmode=driving'
   if (st.lat != null && st.lng != null)
@@ -30,9 +31,10 @@ export default function StoreHistoryModal({ storeId, storeName, summary, onClose
   const [skus, setSkus] = useState(null)
   const [store, setStore] = useState(null)
   useEffect(() => {
-    supabase.from('stores').select('name, lat, lng, place_id').eq('id', storeId).maybeSingle().then(({ data }) => setStore(data))
+    supabase.from('stores').select('name, lat, lng, place_id, pipeline_status').eq('id', storeId).maybeSingle().then(({ data }) => setStore(data))
   }, [storeId])
   const dirUrl = directionsUrl(store)
+  const contacts = useStoreContacts()[storeId] || []
 
   useEffect(() => { (async () => {
     const since = new Date(); since.setDate(since.getDate() - 90)
@@ -72,6 +74,12 @@ export default function StoreHistoryModal({ storeId, storeName, summary, onClose
             <div className="text-[var(--text-primary)] font-semibold truncate">{storeName}</div>
             <div className="text-[var(--text-muted2)] text-xs">Last 90 days</div>
             {summary && <div className="text-[var(--text-secondary)] text-xs mt-0.5">{summary}</div>}
+            {/* WhatsApp / call the store (kept here so the driver's cards stay simple) */}
+            <div className="mt-2 flex items-center gap-2">
+              {contacts.some(c => c.phone)
+                ? <ContactButtons variant="pill" phone={contacts.filter(c => c.phone)} storeId={storeId} storeName={storeName} status={store?.pipeline_status} />
+                : <span className="text-[var(--text-muted2)] text-xs italic">No phone number saved for this store</span>}
+            </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {dirUrl && (
