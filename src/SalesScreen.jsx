@@ -334,7 +334,7 @@ export default function SalesScreen() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-28 lg:pb-6 flex flex-col gap-3 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:gap-4 lg:content-start lg:items-start lg:px-6">
+      <div className="flex-1 overflow-y-auto px-4 pb-28 lg:pb-6 flex flex-col gap-3 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:auto-rows-max lg:gap-4 lg:content-start lg:items-start lg:px-6">
         {rows.length === 0 && (
           <div className="text-center text-[var(--text-muted2)] mt-16 lg:col-span-full">
             <Package size={40} className="mx-auto mb-3 opacity-40" />

@@ -295,7 +295,7 @@ export default function AllocationScreen() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-2 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:gap-3 lg:content-start lg:p-6">
+      <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-2 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:auto-rows-max lg:gap-3 lg:content-start lg:p-6">
         {loading && <div className="text-[var(--text-muted2)] text-center mt-16 lg:col-span-full">Loading...</div>}
         {!loading && dueRows.length === 0 && (
           <div className="text-center text-[var(--text-muted2)] mt-16 lg:col-span-full">
