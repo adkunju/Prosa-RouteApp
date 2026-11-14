@@ -1375,15 +1375,19 @@ export default function PlanViewScreen() {
                 className={`bg-[var(--bg-card)] rounded-xl p-4 ${isDone || isSkipped ? 'opacity-50' : ''} ${draggable && dragIdx === idx ? 'ring-2 ring-[var(--accent)]' : 'transition-transform duration-150'} ${draggable && dragIdx !== null && dragIdx !== idx ? 'opacity-60' : ''}`}>
                 <div className="flex items-start justify-between mb-1">
                   <div className="flex items-center gap-2 min-w-0 flex-1">
-                    {draggable && (
+                    {/* Phone (driver): just the stop number. Desktop: drag handle + lock for re-ordering */}
+                    {!isDesktop && (
+                      <span className="w-6 h-6 shrink-0 rounded-full bg-[var(--accent)] text-white text-xs font-bold flex items-center justify-center tabular-nums">{idx + 1}</span>
+                    )}
+                    {isDesktop && draggable && (
                       <span onPointerDown={e => startDrag(e, idx)}
                         className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0 cursor-grab active:cursor-grabbing touch-none">
                         <GripVertical size={14} className={dragIdx === idx ? 'text-[var(--accent)]' : ''} />
                       </span>
                     )}
-                    <button onClick={() => toggleLock(stop.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
+                    {isDesktop && <button onClick={() => toggleLock(stop.store_id)} className="text-[var(--text-muted2)] hover:text-[var(--text-primary)] shrink-0">
                       {locked[stop.store_id] ? <Lock size={13} className="text-[var(--text-gold)]" /> : <Unlock size={13} />}
-                    </button>
+                    </button>}
                     <button onClick={e => { e.stopPropagation(); openStoreHistory({ storeId: stop.store_id, storeName: stop.stores?.name }) }} onPointerDown={e => e.stopPropagation()} className="text-left text-[var(--text-primary)] text-sm font-medium truncate hover:text-[var(--text-accent)]">{stop.stores?.name}</button>
                     {stop.stores?.pipeline_status && stop.stores.pipeline_status !== 'onboard' && (
                       <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 bg-[var(--accent)]/10 text-[var(--accent)]">
@@ -1394,7 +1398,7 @@ export default function PlanViewScreen() {
                   </div>
                   <span className="text-[var(--text-muted2)] text-xs shrink-0">ETA {formatEta(legInfo[idx]?.eta || 0, effectiveStartMinutes)}</span>
                 </div>
-                {(legInfo[idx]?.legMinutes || 0) > 500 ? (
+                {!isDesktop ? null : (legInfo[idx]?.legMinutes || 0) > 500 ? (
                   <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1 italic">No route data · visit order estimated</div>
                 ) : (
                   <div className="text-[var(--text-muted2)] text-xs pl-5 mb-1">
@@ -1402,25 +1406,25 @@ export default function PlanViewScreen() {
                   </div>
                 )}
                 {(!stop.requirements || stop.requirements.length === 0 || stop.requirements.every(r => (r.approved_qty ?? r.proposed_qty) === 0)) && (
-                  <div className="text-[var(--text-muted2)] text-xs pl-5 italic">Visit only</div>
+                  <div className={`text-[var(--text-muted2)] text-xs italic ${isDesktop ? 'pl-5' : 'pl-8'}`}>Visit only</div>
                 )}
                 {stop.requirements?.filter(r => (r.approved_qty ?? r.proposed_qty) > 0).map(req => {
                   const qty = req.approved_qty ?? req.proposed_qty
                   const dl = req.delivery_line
                   return (
-                    <div key={req.id} className="text-[var(--text-muted)] text-xs flex justify-between pl-5">
+                    <div key={req.id} className={`flex items-center gap-2 ${isDesktop ? 'pl-5' : 'pl-8 mt-1'} ${isDesktop ? 'text-xs text-[var(--text-muted)]' : 'text-sm text-[var(--text-secondary)]'}`}>
                       <span className="flex items-center gap-1">
-                        {req.skus?.name}
+                        {(req.skus?.name || '').replace(/^Prosa\s+/i, '')}
                         {dl?.is_offer && <span className="text-[var(--text-gold)] text-[10px] font-semibold">OFFER</span>}
                       </span>
-                      <span className="text-[var(--text-secondary)]">
-                        {qty} {qty === 1 ? 'pc' : 'pcs'}
+                      <span className="text-[var(--text-primary)] font-semibold">
+                        · {qty} {qty === 1 ? 'pc' : 'pcs'}
                         {dl?.unit_price && <span className="text-[var(--text-muted2)]"> · ₹{dl.unit_price}</span>}
                       </span>
                     </div>
                   )
                 })}
-                <div className="pl-5 mt-2">
+                <div className={`${isDesktop ? 'pl-5' : 'pl-8'} mt-2`}>
                   {isSkipped ? (
                     <div className="flex items-center gap-3">
                       <span className="flex items-center gap-1.5 text-[var(--text-muted2)] text-xs">Skipped</span>
