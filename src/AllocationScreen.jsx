@@ -197,7 +197,7 @@ export default function AllocationScreen() {
         <input type="date" value={planDate} onChange={e => setPlanDate(e.target.value)}
           className="bg-[var(--bg-card)] text-[var(--text-primary)] text-sm rounded-lg px-2 py-1.5 outline-none" />
         <select value={horizon} onChange={e => setHorizon(Number(e.target.value))}
-          className="bg-[var(--bg-card)] text-[var(--text-secondary)] text-xs rounded-lg px-2 py-1.5 outline-none flex-1">
+          className="bg-[var(--bg-card)] text-[var(--text-secondary)] text-xs rounded-lg px-2 py-1.5 outline-none flex-1 lg:flex-none lg:w-64">
           <option value={0}>Due today or overdue</option>
           <option value={1}>Due within 1 day</option>
           <option value={2}>Due within 2 days</option>
@@ -210,7 +210,7 @@ export default function AllocationScreen() {
         {Object.entries(totalsBySku).length === 0 ? (
           <span className="text-[var(--text-muted2)] text-sm">No stores due</span>
         ) : (
-          <table className="w-full text-xs">
+          <table className="w-full text-xs lg:max-w-2xl">
             <thead>
               <tr className="text-[var(--text-muted2)]">
                 <th className="text-left font-normal pb-1">Product</th>
@@ -295,10 +295,10 @@ export default function AllocationScreen() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
-        {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Loading...</div>}
+      <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-2 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:gap-3 lg:content-start lg:p-6">
+        {loading && <div className="text-[var(--text-muted2)] text-center mt-16 lg:col-span-full">Loading...</div>}
         {!loading && dueRows.length === 0 && (
-          <div className="text-center text-[var(--text-muted2)] mt-16">
+          <div className="text-center text-[var(--text-muted2)] mt-16 lg:col-span-full">
             <Package size={40} className="mx-auto mb-3 opacity-40" />
             <p>No stores due in this window</p>
           </div>
@@ -361,11 +361,11 @@ export default function AllocationScreen() {
       </div>
 
       {dueRows.length > 0 && (
-        <div className="p-4 border-t border-[var(--bg-input)] shrink-0">
+        <div className="p-4 border-t border-[var(--bg-input)] shrink-0 lg:px-6 lg:flex lg:justify-end">
         <button
           onClick={() => { if (totalsForConfirm.length) setShowConfirm(true) }}
           disabled={Object.values(totalsBySku).every(q => !Number(q))}
-          className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors"
+          className="w-full lg:w-80 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white font-semibold rounded-xl py-3 flex items-center justify-center gap-2 transition-colors"
         >
           Confirm Production
         </button>
@@ -374,10 +374,10 @@ export default function AllocationScreen() {
 
       {historyFor && <StoreHistoryModal {...historyFor} onClose={() => setHistoryFor(null)} />}
       {showConfirm && (
-        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col justify-end pb-20"
+        <div className="sheet fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col justify-end pb-20 lg:justify-center lg:pb-0"
           onClick={() => setShowConfirm(false)}>
           <div onClick={e => e.stopPropagation()}
-            className="bg-[var(--bg-card)] border-t border-[var(--bg-input)]/60 rounded-t-2xl w-full shadow-2xl flex flex-col" style={{maxHeight: 'min(80dvh, 600px)'}}>
+            className="bg-[var(--bg-card)] border-t border-[var(--bg-input)]/60 rounded-t-2xl lg:rounded-2xl w-full shadow-2xl flex flex-col" style={{maxHeight: 'min(80dvh, 600px)'}}>
             <div className="overflow-y-auto flex-1 p-6 pb-2">
             <div className="text-[var(--text-primary)] text-base font-semibold mb-1">Confirm production</div>
             <div className="text-[var(--text-muted2)] text-xs mb-4">This will log today's batch and open the schedule.</div>

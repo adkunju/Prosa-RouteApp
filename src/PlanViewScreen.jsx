@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from './supabaseClient'
 import DeliveryConfirmed from './DeliveryConfirmed'
@@ -13,6 +14,8 @@ import { openStoreHistory } from './StoreHistoryModal'
 import { formatDuration } from './dbUtils'
 import { useSettings } from './useSettings'
 import { computeProposedQty } from './forecastMath'
+import { useIsDesktop } from './useIsDesktop'
+import LogScreen from './LogScreen'
 
 const today = () => new Date().toLocaleDateString('en-CA')
 // START_HOUR replaced by settings.route_start_time
@@ -488,6 +491,7 @@ function batchAvail(b) {
 }
 
 export default function PlanViewScreen() {
+  const isDesktop = useIsDesktop()
   const [dates, setDates] = useState([])
   const [selectedDate, setSelectedDate] = useState(today())
   const [stops, setStops] = useState([])
@@ -511,6 +515,8 @@ export default function PlanViewScreen() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [completedStopIds, setCompletedStopIds] = useState(new Set())
+  const [expandedDone, setExpandedDone] = useState(new Set()) // delivered/skipped rows opened with Edit
+  const [editDelivery, setEditDelivery] = useState(null) // { storeId, name } — pop-up to correct a recorded delivery
   const [pickupDueToday, setPickupDueToday] = useState([])
   const [pickupModalStore, setPickupModalStore] = useState(null)
   const [skippedPickupStoreIds, setSkippedPickupStoreIds] = useState(new Set())
@@ -565,7 +571,7 @@ export default function PlanViewScreen() {
 
   async function loadBatches() {
     const { data } = await supabase.from('production_batches')
-      .select('id, sku_id, produced_on, expires_on, qty, delivery_lines(qty_delivered), stock_adjustments(qty)')
+      .select('id, sku_id, produced_on, expires_on, qty, skus(name), delivery_lines(qty_delivered), stock_adjustments(qty)')
       .gt('expires_on', today())
       .order('produced_on')
     setBatches(data || [])
@@ -624,51 +630,31 @@ export default function PlanViewScreen() {
       setCompletedStopIds(new Set())
     }
 
-    // Load depot pickups due on/before this date
-    const [{ data: forecast }, { data: pickupStores }, { data: pickupDeliveredToday }, { data: pickupOverrides }] = await Promise.all([
-      supabase.from('store_sku_forecast').select('*').neq('pipeline_status', 'dropped'),
-      supabase.from('stores').select('id, name, is_pickup, is_active, is_d2c, pipeline_status').eq('is_pickup', true).eq('is_active', true),
+    // Depot pickups come only from a saved Week Plan: the Schedule's Save writes each pickup's
+    // quantity (pickup_allocations). A pickup shows until it has been collected after that save;
+    // one collected today stays listed so its card shows as done. Reset clears them.
+    const [{ data: pickupStores }, { data: pickupDeliveredToday }, { data: pickupOverrides }] = await Promise.all([
+      supabase.from('stores').select('id, name, is_pickup, is_active, is_d2c, exclude_from_forecast, pipeline_status').eq('is_pickup', true).eq('is_active', true),
       supabase.from('delivery_lines').select('store_id').eq('delivered_on', date).is('plan_stop_id', null),
       supabase.from('pickup_allocations').select('store_id, sku_id, qty, updated_at'),
     ])
-    const pickupOverrideMap = {}
-    ;(pickupOverrides || []).forEach(o => { pickupOverrideMap[`${o.store_id}_${o.sku_id}`] = o.qty })
     const pickupStoreIds = new Set((pickupStores || []).map(s => s.id))
     const deliveredPickupToday = new Set((pickupDeliveredToday || []).filter(d => pickupStoreIds.has(d.store_id)).map(d => d.store_id))
-    const pickupRows = (forecast || []).filter(r =>
-      pickupStoreIds.has(r.store_id) && r.next_visit_due && (
-        deliveredPickupToday.has(r.store_id) ||
-        (new Date(r.next_visit_due) - new Date(date)) / 86400000 <= 3
-      )
-    )
     const byPickupStore = {}
-    pickupRows.forEach(r => {
-      if (!byPickupStore[r.store_id]) {
-        byPickupStore[r.store_id] = { store_id: r.store_id, name: r.store_name, due_date: r.next_visit_due, skuReqs: [] }
-      }
-      const overrideKey = `${r.store_id}_${r.sku_id}`
-      const qty = pickupOverrideMap[overrideKey] !== undefined
-        ? pickupOverrideMap[overrideKey]
-        : computeProposedQty(r).proposed
-      byPickupStore[r.store_id].skuReqs.push({ sku_id: r.sku_id, name: r.sku_name, qty })
-      if (r.next_visit_due < byPickupStore[r.store_id].due_date) byPickupStore[r.store_id].due_date = r.next_visit_due
-    })
-    // D2C: no forecast — show it when the Schedule set aside a quantity for it, until that
-    // allocation has been collected (a D2C delivery recorded after the allocation was saved)
-    const d2cStores = (pickupStores || []).filter(st => st.is_d2c && st.pipeline_status !== 'dropped' && !byPickupStore[st.id])
-    if (d2cStores.length) {
-      const [{ data: skuRows }, { data: d2cLines }] = await Promise.all([
+    const withAlloc = (pickupStores || []).filter(st => st.pipeline_status !== 'dropped'
+      && (pickupOverrides || []).some(o => o.store_id === st.id && o.qty > 0))
+    if (withAlloc.length) {
+      const [{ data: skuRows }, { data: pickupLines }] = await Promise.all([
         supabase.from('skus').select('id, name'),
-        supabase.from('delivery_lines').select('store_id, created_at, delivered_on').in('store_id', d2cStores.map(st => st.id)).order('created_at', { ascending: false }).limit(50),
+        supabase.from('delivery_lines').select('store_id, created_at, delivered_on').in('store_id', withAlloc.map(st => st.id)).order('created_at', { ascending: false }).limit(200),
       ])
-      d2cStores.forEach(st => {
+      withAlloc.forEach(st => {
         const allocs = (pickupOverrides || []).filter(o => o.store_id === st.id && o.qty > 0)
-        if (!allocs.length) return
         const allocAt = allocs.reduce((m, o) => (o.updated_at > m ? o.updated_at : m), '')
-        const collectedAfter = (d2cLines || []).some(l => l.store_id === st.id && l.created_at > allocAt && l.delivered_on !== date)
+        const collectedAfter = (pickupLines || []).some(l => l.store_id === st.id && l.created_at > allocAt && l.delivered_on !== date)
         if (collectedAfter && !deliveredPickupToday.has(st.id)) return
         byPickupStore[st.id] = {
-          store_id: st.id, name: st.name, due_date: date, is_d2c: true,
+          store_id: st.id, name: st.name, due_date: date, is_d2c: !!st.is_d2c,
           skuReqs: allocs.map(o => ({ sku_id: o.sku_id, name: (skuRows || []).find(k => k.id === o.sku_id)?.name || 'Item', qty: o.qty })),
         }
       })
@@ -714,6 +700,15 @@ export default function PlanViewScreen() {
     return () => { window.removeEventListener('prosa:stock_changed', fn); window.removeEventListener('prosa:matrix_updated', fm) }
   }, [])
   useEffect(() => { loadPlan(selectedDate) }, [selectedDate])
+  // A delivery recorded, edited or deleted anywhere (e.g. in the desktop log beside this list)
+  // re-checks which stops are done, so the list never shows a deleted delivery as delivered
+  const dateRef = useRef(selectedDate)
+  dateRef.current = selectedDate
+  useEffect(() => {
+    const fn = () => loadPlan(dateRef.current)
+    window.addEventListener('prosa:stock_changed', fn)
+    return () => window.removeEventListener('prosa:stock_changed', fn)
+  }, []) // eslint-disable-line
 
   useEffect(() => {
     if (stops.length > 0 && depot?.id && Object.keys(matrixSeconds).length > 0) {
@@ -846,6 +841,7 @@ export default function PlanViewScreen() {
   }
 
   function toggleSkip(stopId) {
+    setExpandedDone(x => { if (!x.has(stopId)) return x; const n = new Set(x); n.delete(stopId); return n })
     setSkippedStopIds(s => {
       const n = new Set(s)
       if (n.has(stopId)) n.delete(stopId)
@@ -1208,21 +1204,39 @@ export default function PlanViewScreen() {
   const mapsLinks = mapsOrigin ? buildMapsLinks(mapsOrigin, orderedStoreObjs) : []
   const completedCount = orderedStops.filter(s => completedStopIds.has(s.id)).length
 
+
   return (
-    <div className="flex-1 flex flex-col overflow-hidden relative">
+    <div className="flex-1 flex overflow-hidden">
+    {/* on desktop this list becomes the left column, with the route map beside it */}
+    <div className="flex-1 flex flex-col overflow-hidden relative lg:flex-none lg:w-[460px] lg:border-r lg:border-[var(--bg-input)]">
       {deliveryDone && <DeliveryConfirmed {...deliveryDone} onClose={() => setDeliveryDone(null)} />}
       {toast && (
         <div onClick={() => setToast('')} className="fixed top-4 left-4 right-4 z-[70] bg-red-900/90 text-red-100 text-sm rounded-xl px-4 py-3 shadow-xl">{toast}</div>
       )}
       <div className="px-3 py-1.5 border-b border-[var(--bg-input)] flex items-center gap-2 shrink-0">
         <Calendar size={13} className="text-[var(--text-accent)] shrink-0" />
+        {isDesktop ? (
+          // Desktop: any day, past or future, so a missed day can be entered or checked later
+          <div className="flex items-center gap-1 shrink-0">
+            <button onClick={() => { const d = new Date(selectedDate + 'T00:00:00'); d.setDate(d.getDate() - 1); setSelectedDate(d.toLocaleDateString('en-CA')) }}
+              title="Previous day" className="w-6 h-6 rounded-md bg-[var(--bg-input)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)]">‹</button>
+            <input type="date" value={selectedDate} onChange={e => e.target.value && setSelectedDate(e.target.value)}
+              className="bg-[var(--bg-input)] text-[var(--text-primary)] text-xs font-medium rounded-md px-2 py-1 outline-none [color-scheme:dark]" />
+            <button onClick={() => { const d = new Date(selectedDate + 'T00:00:00'); d.setDate(d.getDate() + 1); setSelectedDate(d.toLocaleDateString('en-CA')) }}
+              title="Next day" className="w-6 h-6 rounded-md bg-[var(--bg-input)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)]">›</button>
+            {selectedDate !== today() && (
+              <button onClick={() => setSelectedDate(today())} className="text-[var(--text-accent)] text-xs ml-1">Today</button>
+            )}
+          </div>
+        ) : (
         <div className="relative shrink-0">
           <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
             className="bg-transparent text-[var(--text-primary)] text-xs font-medium outline-none appearance-none pr-4">
-            {dates.map(d => <option key={d} value={d}>{d}{d === today() ? ' (today)' : ''}</option>)}
+            {(dates.includes(selectedDate) ? dates : [selectedDate, ...dates].sort()).map(d => <option key={d} value={d}>{d}{d === today() ? ' (today)' : ''}</option>)}
           </select>
           <ChevronDown size={11} className="absolute right-0 top-0.5 text-[var(--text-muted)] pointer-events-none" />
         </div>
+        )}
         <span className="text-[var(--text-muted2)] text-xs flex-1 truncate">{formatDuration(totalSeconds / 60 + remainingOrder.length * 15)} · {(totalMeters / 1000).toFixed(1)} km back to depot · {completedCount}/{orderedStops.length}</span>
       </div>
 
@@ -1253,7 +1267,7 @@ export default function PlanViewScreen() {
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-2">
         {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Loading...</div>}
         {!loading && stops.length === 0 && (
           <div className="text-center text-[var(--text-muted2)] mt-16">
@@ -1347,8 +1361,6 @@ export default function PlanViewScreen() {
         )}
         {(() => {
           const activeStops = orderedStops.filter(s => !skippedStopIds.has(s.id) && !completedStopIds.has(s.id))
-          const doneStops = orderedStops.filter(s => completedStopIds.has(s.id))
-          const skippedStops = orderedStops.filter(s => skippedStopIds.has(s.id) && !completedStopIds.has(s.id))
 
           const renderCard = (stop, idx, draggable) => {
             const isDone = completedStopIds.has(stop.id)
@@ -1394,7 +1406,6 @@ export default function PlanViewScreen() {
                 )}
                 {stop.requirements?.filter(r => (r.approved_qty ?? r.proposed_qty) > 0).map(req => {
                   const qty = req.approved_qty ?? req.proposed_qty
-                  const moq = req.skus?.min_delivery_qty || 0
                   const dl = req.delivery_line
                   return (
                     <div key={req.id} className="text-[var(--text-muted)] text-xs flex justify-between pl-5">
@@ -1405,7 +1416,6 @@ export default function PlanViewScreen() {
                       <span className="text-[var(--text-secondary)]">
                         {qty} {qty === 1 ? 'pc' : 'pcs'}
                         {dl?.unit_price && <span className="text-[var(--text-muted2)]"> · ₹{dl.unit_price}</span>}
-                        {moq > 0 && qty < moq && <span className="text-[var(--text-gold)]"> · MOQ {moq}</span>}
                       </span>
                     </div>
                   )
@@ -1485,8 +1495,34 @@ export default function PlanViewScreen() {
 
           return (
             <>
-              {activeStops.map((stop, listIdx) => {
+              {orderedStops.map((stop) => {
                 const idx = orderedStops.findIndex(s => s.id === stop.id)
+                // Delivered / skipped stops stay in their place in the route as a slim faded row;
+                // Edit opens the full card (Undo, details) in place
+                if (completedStopIds.has(stop.id) || skippedStopIds.has(stop.id)) {
+                  const done = completedStopIds.has(stop.id)
+                  if (expandedDone.has(stop.id)) return (
+                    <div key={stop.id} className="flex flex-col gap-1">
+                      {renderCard(stop, idx, false)}
+                      <button onClick={() => setExpandedDone(x => { const n = new Set(x); n.delete(stop.id); return n })}
+                        className="self-end text-[var(--text-muted2)] hover:text-[var(--text-primary)] text-xs px-2">Collapse</button>
+                    </div>
+                  )
+                  return (
+                    <div key={stop.id} className="bg-[var(--bg-card)] rounded-xl px-4 py-2.5 flex items-center gap-2 opacity-50 hover:opacity-80 transition-opacity">
+                      {done ? <CheckCircle size={14} className="text-[var(--accent)] shrink-0" /> : <X size={14} className="text-[var(--text-muted2)] shrink-0" />}
+                      <span className="text-[var(--text-primary)] text-sm truncate flex-1">{stop.stores?.name}</span>
+                      <span className="text-[var(--text-muted2)] text-xs shrink-0">{done ? 'Delivered' : 'Skipped'}</span>
+                      {done ? (
+                        <button onClick={() => setEditDelivery({ storeId: stop.store_id, name: stop.stores?.name })}
+                          className="text-[var(--text-accent)] text-xs font-medium shrink-0 ml-2">Edit</button>
+                      ) : (
+                        <button onClick={() => toggleSkip(stop.id)}
+                          className="text-[var(--text-accent)] text-xs font-medium shrink-0 ml-2">Undo skip</button>
+                      )}
+                    </div>
+                  )
+                }
                 // A drop line appears BEFORE this card when:
                 // - dragging downward: overIdx === idx and dragIdx < idx  → line above target
                 // - dragging upward:  overIdx === idx and dragIdx > idx  → line above target (card slides down)
@@ -1505,51 +1541,25 @@ export default function PlanViewScreen() {
                 <div style={{height: 3, borderRadius: 2, background: 'var(--accent)', boxShadow: '0 0 8px 2px var(--accent)', margin: '0 8px'}} />
               )}
 
-              {doneStops.length > 0 && (
-                <div className="mt-1">
-                  <button onClick={() => setShowDelivered(v => !v)}
-                    className="w-full flex items-center justify-between bg-[var(--bg-card)]/60 rounded-xl px-4 py-2.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-input)]/60 transition-colors">
-                    <span className="flex items-center gap-1.5">
-                      <CheckCircle size={13} className="text-[var(--accent)]" /> Delivered ({doneStops.length})
-                    </span>
-                    <ChevronDown size={14} className={showDelivered ? 'rotate-180 transition-transform' : 'transition-transform'} />
-                  </button>
-                  {showDelivered && (
-                    <div className="flex flex-col gap-2 mt-2">
-                      {doneStops.map(stop => {
-                        const idx = orderedStops.findIndex(s => s.id === stop.id)
-                        return renderCard(stop, idx, false)
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {skippedStops.length > 0 && (
-                <div className="mt-1">
-                  <button onClick={() => setShowSkipped(v => !v)}
-                    className="w-full flex items-center justify-between bg-[var(--bg-card)]/60 rounded-xl px-4 py-2.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-input)]/60 transition-colors">
-                    <span className="flex items-center gap-1.5">Skipped ({skippedStops.length})</span>
-                    <ChevronDown size={14} className={showSkipped ? 'rotate-180 transition-transform' : 'transition-transform'} />
-                  </button>
-                  {showSkipped && (
-                    <div className="flex flex-col gap-2 mt-2">
-                      {skippedStops.map(stop => {
-                        const idx = orderedStops.findIndex(s => s.id === stop.id)
-                        return renderCard(stop, idx, false)
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
             </>
           )
         })()}
       </div>
 
+      {editDelivery && createPortal(
+        <div className="sheet fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setEditDelivery(null)}>
+          <div onClick={e => e.stopPropagation()}
+            className="bg-[var(--bg-root)] border border-[var(--bg-input)] rounded-2xl w-full max-w-xl shadow-2xl flex flex-col overflow-hidden" style={{ height: 'min(80dvh, 760px)' }}>
+            <div className="flex-1 min-h-0 flex flex-col">
+              <LogScreen date={selectedDate} storeId={editDelivery.storeId} onDone={() => setEditDelivery(null)} />
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
       {quickOpen && <QuickDeliverModal onClose={() => setQuickOpen(false)} onSaved={() => loadPlan?.()} />}
       {addStopOpen && planId && (
-        <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
+        <div className="sheet fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
           <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0">
             <span className="text-[var(--text-primary)] font-semibold">Add stop / Prospects</span>
             <button onClick={() => setAddStopOpen(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
@@ -1568,7 +1578,7 @@ export default function PlanViewScreen() {
             <h2 className="text-[var(--text-primary)] font-semibold"><button onClick={() => openStoreHistory({ storeId: activeCompleteStop.store_id, storeName: activeCompleteStop.stores?.name })} className="text-left hover:text-[var(--text-accent)]">{activeCompleteStop.stores?.name}</button></h2>
             <button onClick={() => setActiveCompleteStop(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">
+          <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-4">
             {[...activeCompleteStop.requirements.map(r => ({ key: r.id, sku_id: r.sku_id, name: r.skus?.name, extra: false })),
               ...extraReqs.map(e => ({ key: 'x-' + e.sku_id, sku_id: e.sku_id, name: e.name, extra: true }))].map(row => {
               const skuBatches = batchesForSku(row.sku_id)
@@ -1745,6 +1755,43 @@ export default function PlanViewScreen() {
           onAdded={() => loadPlan(selectedDate)}
         />
       )}
+    </div>
+    {isDesktop && (
+      // Desktop: the day's delivery log beside the stop list, to enter missed deliveries
+      // and review / correct what was recorded
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-[var(--bg-root)]">
+        {(() => {
+          // Stock in hand right now, per product, with each batch's pieces left and days to expiry
+          const bySku = {}
+          batches.forEach(b => {
+            const left = batchAvail(b)
+            if (left <= 0) return
+            const k = b.sku_id
+            ;(bySku[k] ||= { name: (b.skus?.name || 'Item').replace(/^Prosa\s+/i, ''), total: 0, list: [] })
+            bySku[k].total += left
+            bySku[k].list.push({ id: b.id, left, made: b.produced_on, days: Math.round((new Date(b.expires_on + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 86400000) })
+          })
+          const fmt = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+          return (
+            <div className="shrink-0 px-4 py-3 border-b border-[var(--bg-input)] flex items-start gap-6 flex-wrap bg-[var(--bg-card)]/40">
+              <span className="text-[var(--text-muted)] text-xs pt-0.5">Stock in hand now</span>
+              {Object.keys(bySku).length === 0 && <span className="text-[var(--text-muted2)] text-xs pt-0.5">Nothing in stock</span>}
+              {Object.values(bySku).map(g => (
+                <div key={g.name} className="text-xs">
+                  <div><span className="text-[var(--text-primary)] font-medium">{g.name}</span> <span className="text-[var(--text-accent)] font-semibold ml-1">{g.total} pcs</span></div>
+                  <div className="text-[var(--text-muted2)] mt-0.5 flex gap-3 flex-wrap">
+                    {g.list.map(b => (
+                      <span key={b.id} className={b.days <= 1 ? 'text-[var(--text-amber)]' : ''}>made {fmt(b.made)} · {b.left} left · {b.days}d to expiry</span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        })()}
+        <LogScreen date={selectedDate} />
+      </div>
+    )}
     </div>
   )
 }

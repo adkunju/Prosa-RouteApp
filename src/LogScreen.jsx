@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { supabase } from './supabaseClient'
 import DeliveryConfirmed from './DeliveryConfirmed'
 import { Plus, X, CheckCircle, Trash2, ChevronDown, Save, PackageMinus } from 'lucide-react'
+import { askConfirm } from './ConfirmDialog'
 import { notifyStockChanged, reasonLabel, fetchBatchUsage, splitAcrossBatches, batchErrorText } from './stockUtils'
 import { ReminderPicker, saveReminder, EMPTY_REMINDER } from './CallFollowupPrompt'
 import StockAdjustModal from './StockAdjustModal'
@@ -12,7 +13,10 @@ function emptyLine(id) {
   return { id, sku_id: '', type: 'sale', produced_on: '', qty: '', src_dl: '' }
 }
 
-export default function LogScreen() {
+// onlyDate: show just that day's deliveries, returns and adjustments (used beside the desktop
+// Delivery screen); new visits default to that date. Without it: the recent 40, as before.
+// storeId (with date): only that store's lines — used as the 'edit this delivery' pop-up.
+export default function LogScreen({ date: onlyDate, storeId: onlyStore, onDone } = {}) {
   const [stores, setStores] = useState([])
   const [skus, setSkus] = useState([])
   const [batches, setBatches] = useState([])
@@ -22,7 +26,7 @@ export default function LogScreen() {
   const [saved, setSaved] = useState(false)
   const [store_id, setStoreId] = useState('')
   const [editingLine, setEditingLine] = useState(null) // {id, sku_id, batch_id, produced_on, qty_delivered, qty_returned, type, unit_price, is_offer, plan_stop_id, store_name, delivered_on, return_id}
-  const [date, setDate] = useState(today())
+  const [date, setDate] = useState(onlyDate || today())
   const [lines, setLines] = useState([emptyLine(1)])
   const [nextId, setNextId] = useState(2)
   const [deleting, setDeleting] = useState(null)
@@ -41,27 +45,34 @@ export default function LogScreen() {
       supabase.from('stores').select('id, name').eq('is_active', true).eq('is_depot', false).order('name'),
       supabase.from('skus').select('id, name').eq('is_active', true).order('name'),
       supabase.from('production_batches').select('id, sku_id, produced_on, expires_on, qty').gt('expires_on', today()).order('expires_on'),
-      supabase.from('delivery_lines')
-        .select('id, delivered_on, qty_delivered, unit_price, is_offer, sku_id, plan_stop_id, store_id, skus(name), plan_stops(store_id, stores(name)), store:stores!delivery_lines_store_id_fkey(name), batch_id, returns(id, qty_returned, returned_on, delivery_line_id, produced_on), production_batches(produced_on)')
-        .order('delivered_on', { ascending: false }).limit(40),
-      supabase.from('stock_adjustments').select('id, qty, reason, notes, adjusted_on, skus(name), production_batches(produced_on)')
-        .order('adjusted_on', { ascending: false }).order('created_at', { ascending: false }).limit(40),
+      (() => {
+        const q = supabase.from('delivery_lines')
+          .select('id, delivered_on, qty_delivered, unit_price, is_offer, sku_id, plan_stop_id, store_id, skus(name), plan_stops(store_id, stores(name)), store:stores!delivery_lines_store_id_fkey(name), batch_id, returns(id, qty_returned, returned_on, delivery_line_id, produced_on), production_batches(produced_on)')
+        return onlyDate ? q.eq('delivered_on', onlyDate).order('created_at') : q.order('delivered_on', { ascending: false }).limit(40)
+      })(),
+      (() => {
+        const q = supabase.from('stock_adjustments').select('id, qty, reason, notes, adjusted_on, skus(name), production_batches(produced_on)')
+        return onlyDate ? q.eq('adjusted_on', onlyDate).order('created_at', { ascending: false })
+          : q.order('adjusted_on', { ascending: false }).order('created_at', { ascending: false }).limit(40)
+      })(),
       fetchBatchUsage(),
     ])
     if (st) setStores(st)
     if (sk) setSkus(sk)
     if (ba) setBatches(ba.map(b => ({ ...b, avail: b.qty - (used[b.id] || 0) })))
-    if (rv) setRecentVisits(rv)
+    if (rv) setRecentVisits(onlyStore ? rv.filter(l => (l.store_id || l.plan_stops?.store_id) === onlyStore) : rv)
     // Returns picked up at each visit — they're usually linked to an OLDER delivery line
     // (the batch that expired), so fetch them by date and match on store + product + date.
-    const oldest = rv?.length ? rv[rv.length - 1].delivered_on : today()
-    const { data: vr } = await supabase.from('returns')
+    const oldest = onlyDate || (rv?.length ? rv[rv.length - 1].delivered_on : today())
+    let vq = supabase.from('returns')
       .select('id, qty_returned, returned_on, store_id, sku_id, produced_on, delivery_line_id, skus(name), stores(name)')
       .gte('returned_on', oldest)
-    setVisitReturns(vr || [])
+    if (onlyDate) vq = vq.lte('returned_on', onlyDate)
+    const { data: vr } = await vq
+    setVisitReturns(onlyStore ? (vr || []).filter(x => x.store_id === onlyStore) : (vr || []))
     // Only show adjustments within the date span the visit list covers (older ones are on the Production screen)
-    const oldestVisit = rv?.length === 40 ? rv[rv.length - 1].delivered_on : ''
-    setAdjustments((adj || []).filter(a => a.adjusted_on >= oldestVisit))
+    const oldestVisit = !onlyDate && rv?.length === 40 ? rv[rv.length - 1].delivered_on : ''
+    setAdjustments(onlyStore ? [] : (adj || []).filter(a => a.adjusted_on >= oldestVisit))
   }
 
   async function undoAdjustment(id) {
@@ -72,7 +83,14 @@ export default function LogScreen() {
     setDeleting(null)
   }
 
-  useEffect(() => { load() }, [])
+  // Reload when the chosen day changes, and whenever a delivery / stock change is recorded elsewhere
+  useEffect(() => {
+    if (onlyDate) setDate(onlyDate)
+    load()
+    const onChange = () => load()
+    window.addEventListener('prosa:stock_changed', onChange)
+    return () => window.removeEventListener('prosa:stock_changed', onChange)
+  }, [onlyDate]) // eslint-disable-line
 
   function addLine() { setLines(l => [...l, emptyLine(nextId)]); setNextId(n => n + 1) }
   function removeLine(id) { setLines(l => l.filter(x => x.id !== id)) }
@@ -192,15 +210,15 @@ export default function LogScreen() {
   function formValid() { return store_id && lines.every(lineValid) }
 
   function resetForm() {
-    setShowForm(false); setStoreId(''); setDate(today()); setReminder(EMPTY_REMINDER)
+    setShowForm(false); setStoreId(''); setDate(onlyDate || today()); setReminder(EMPTY_REMINDER)
     setLines([emptyLine(1)]); setNextId(2)
   }
 
   // Deletes one delivery line, the returns linked to it, and returns of the SAME product
   // logged at this store on this date (returns from a visit are often linked to an older
   // delivery line of the batch that expired, so linking by delivery_line_id alone misses them).
-  async function deleteVisit(line) {
-    if (confirmDelete !== line.id) { setConfirmDelete(line.id); setTimeout(() => setConfirmDelete(c => c === line.id ? null : c), 3000); return }
+  async function deleteVisit(line, confirmed = false) {
+    if (!confirmed && confirmDelete !== line.id) { setConfirmDelete(line.id); setTimeout(() => setConfirmDelete(c => c === line.id ? null : c), 3000); return }
     setConfirmDelete(null)
     setDeleting(line.id)
     const storeId = line.store_id || line.plan_stops?.store_id
@@ -334,10 +352,44 @@ export default function LogScreen() {
     const d = a.adjusted_on; if (!acc[d]) acc[d] = []; acc[d].push(a); if (!grouped[d]) grouped[d] = []; return acc
   }, {})
 
+  function openEdit(line) {
+    setEditError('')
+    setEditingLine({
+      id: line.id,
+      sku_id: line.sku_id,
+      orig_sku_id: line.sku_id,
+      batch_id: line.batch_id,
+      produced_on: line.production_batches?.produced_on || '',
+      orig_produced_on: line.production_batches?.produced_on || '',
+      qty_delivered: line.qty_delivered,
+      unit_price: line.unit_price ?? '',
+      is_offer: line.is_offer || false,
+      store_id: line.store_id || line.plan_stops?.store_id || null,
+      store_name: line.plan_stops?.stores?.name || line.store?.name || 'Unknown store',
+      delivered_on: line.delivered_on,
+      returns: returnsForLine(line).map(r => ({ id: r.id, qty_returned: r.qty_returned, orig_qty: r.qty_returned, returned_on: r.returned_on, produced_on: r.produced_on, delivery_line_id: r.delivery_line_id, orig_dl: r.delivery_line_id, this_visit: r.returned_on === line.delivered_on })).sort((a, b) => a.returned_on.localeCompare(b.returned_on)),
+      newReturn: { qty: '', date: line.delivered_on, delivery_line_id: '', open: false },
+      priorDeliveries: [],
+                        })
+    loadPriorDeliveries(line)
+  }
+
+  // Pop-up mode (one store's delivery): skip the list and go straight to the edit form
+  // when there is just one line; closing or saving the form closes the pop-up
+  const autoOpened = useRef(false)
+  useEffect(() => {
+    if (onlyStore && !autoOpened.current && recentVisits.length === 1) { autoOpened.current = true; openEdit(recentVisits[0]) }
+  }, [recentVisits]) // eslint-disable-line
+  const wasEditing = useRef(false)
+  useEffect(() => {
+    if (editingLine) wasEditing.current = true
+    else if (wasEditing.current && onlyStore && recentVisits.length <= 1) onDone?.()
+  }, [editingLine]) // eslint-disable-line
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
-      <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
-        <span className="text-[var(--text-muted)] text-sm">Delivery log</span>
+      {!onlyStore && <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
+        <span className="text-[var(--text-muted)] text-sm">{onlyDate ? `Recorded on ${onlyDate}` : 'Delivery log'}</span>
         <div className="flex items-center gap-2">
         <button onClick={() => setShowAdjust(true)}
           className="bg-[var(--bg-input)] text-[var(--text-amber)] text-sm font-medium px-3 py-1.5 rounded-lg flex items-center gap-1.5">
@@ -348,15 +400,21 @@ export default function LogScreen() {
           <Plus size={15} /> Log visit
         </button>
         </div>
-      </div>
+      </div>}
+      {onlyStore && (
+        <div className="px-4 py-3 border-b border-[var(--bg-input)] flex items-center justify-between shrink-0">
+          <span className="text-[var(--text-primary)] text-sm font-semibold">Pick a line to edit</span>
+          <button onClick={() => onDone?.()} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={18} /></button>
+        </div>
+      )}
       {deliveryDone && <DeliveryConfirmed {...deliveryDone} onClose={() => setDeliveryDone(null)} />}
       {showAdjust && <StockAdjustModal onClose={() => setShowAdjust(false)} onSaved={load} />}
 
-      <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">
+      <div className={`flex-1 overflow-y-auto p-4 flex flex-col gap-4 ${onlyStore ? "pb-4" : "pb-28 lg:pb-6"}`}>
         {Object.keys(grouped).length === 0 && (
           <div className="text-center text-[var(--text-muted2)] mt-16">
             <CheckCircle size={40} className="mx-auto mb-3 opacity-40" />
-            <p>No deliveries logged yet</p>
+            <p>{onlyDate ? `Nothing recorded for ${onlyDate} yet` : 'No deliveries logged yet'}</p>
           </div>
         )}
         {Object.entries(grouped).sort(([a],[b]) => b.localeCompare(a)).map(([d, lines]) => (
@@ -417,23 +475,7 @@ export default function LogScreen() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <button onClick={() => { setEditError(''); setEditingLine({
-                          id: line.id,
-                          sku_id: line.sku_id,
-                          orig_sku_id: line.sku_id,
-                          batch_id: line.batch_id,
-                          produced_on: line.production_batches?.produced_on || '',
-                          orig_produced_on: line.production_batches?.produced_on || '',
-                          qty_delivered: line.qty_delivered,
-                          unit_price: line.unit_price ?? '',
-                          is_offer: line.is_offer || false,
-                          store_id: line.store_id || line.plan_stops?.store_id || null,
-                          store_name: line.plan_stops?.stores?.name || line.store?.name || 'Unknown store',
-                          delivered_on: line.delivered_on,
-                          returns: returnsForLine(line).map(r => ({ id: r.id, qty_returned: r.qty_returned, orig_qty: r.qty_returned, returned_on: r.returned_on, produced_on: r.produced_on, delivery_line_id: r.delivery_line_id, orig_dl: r.delivery_line_id, this_visit: r.returned_on === line.delivered_on })).sort((a, b) => a.returned_on.localeCompare(b.returned_on)),
-                          newReturn: { qty: '', date: line.delivered_on, delivery_line_id: '', open: false },
-                          priorDeliveries: [],
-                        }); loadPriorDeliveries(line) }}
+                      <button onClick={() => openEdit(line)}
                         className="text-[var(--text-muted2)] hover:text-[var(--accent)] text-xs transition-colors">
                         Edit
                       </button>
@@ -458,7 +500,7 @@ export default function LogScreen() {
             <h2 className="text-[var(--text-primary)] font-semibold">Edit Entry</h2>
             <button onClick={() => setEditingLine(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-3">
+          <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-3">
             <div className="bg-[var(--bg-card)] rounded-xl px-4 py-3 flex justify-between items-center">
               <span className="text-[var(--text-primary)] text-sm font-medium">{editingLine.store_name}</span>
               <span className="text-[var(--text-muted)] text-xs">{editingLine.delivered_on}</span>
@@ -570,6 +612,26 @@ export default function LogScreen() {
               className="w-full disabled:opacity-50 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-semibold rounded-xl py-3 transition-colors flex items-center justify-center gap-2">
               <Save size={18} /> {editSaving ? 'Saving...' : 'Save Changes'}
             </button>
+            <button disabled={editSaving || deleting === editingLine.id}
+              onClick={async () => {
+                const line = recentVisits.find(l => l.id === editingLine.id)
+                if (!line) return
+                const ok = await askConfirm({
+                  title: 'Cancel this delivery?',
+                  lines: [
+                    `${editingLine.store_name} · ${line.skus?.name || ''} · ${line.qty_delivered} pcs on ${line.delivered_on}`,
+                    'The pieces go back into stock and the stop shows as not delivered',
+                    'Returns picked up on this visit are removed too',
+                  ],
+                  okLabel: 'Cancel delivery', cancelLabel: 'Keep it', danger: true,
+                })
+                if (!ok) return
+                await deleteVisit(line, true)
+                setEditingLine(null)
+              }}
+              className="w-full mt-2 disabled:opacity-50 text-red-400 hover:bg-red-500/10 border border-red-500/30 font-medium rounded-xl py-2.5 text-sm transition-colors flex items-center justify-center gap-2">
+              <Trash2 size={15} /> {deleting === editingLine.id ? 'Cancelling…' : 'Cancel delivery'}
+            </button>
           </div>
         </div>
       )}
@@ -581,7 +643,7 @@ export default function LogScreen() {
             <button onClick={resetForm} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-3">
+          <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-3">
             <div className="relative">
               <select value={store_id} onChange={e => setStoreId(e.target.value)}
                 className="w-full bg-[var(--bg-card)] text-[var(--text-primary)] rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)] appearance-none">

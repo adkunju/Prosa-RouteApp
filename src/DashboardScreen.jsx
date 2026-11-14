@@ -8,6 +8,7 @@ import StoreMap from './StoreMap'
 import FollowupsCard from './FollowupsCard'
 import QuickDeliverModal from './QuickDeliverModal'
 import AddStoreModal from './AddStoreModal'
+import { useIsDesktop } from './useIsDesktop'
 import { ArrowUp, ArrowDown, Minus, X, Clock, Navigation } from 'lucide-react'
 
 function isoDate(d) { return localISO(d) } // local date — toISOString() would give the UTC day
@@ -50,6 +51,7 @@ function LineChart({ data }) {
 }
 
 export default function DashboardScreen() {
+  const isDesktop = useIsDesktop()
   const [loading, setLoading] = useState(true)
   const [stats, setStats] = useState(null)
   const [stores, setStores] = useState([])
@@ -210,13 +212,38 @@ export default function DashboardScreen() {
     setDeliveriesToday(Object.entries(byStore).map(([name, v]) => ({ name, qty: v.qty, ret: v.ret })).sort((a, b) => b.qty - a.qty))
   })() }, [selectedDate])
 
+  const storePanel = selectedStore && (
+      <div className="absolute bottom-4 left-4 right-4 lg:left-auto lg:w-96 bg-[var(--bg-card)]/85 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 shadow-2xl">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[var(--text-primary)] font-semibold text-sm">{selectedStore.name}</span>
+          <button onClick={() => setSelectedStore(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={16} /></button>
+        </div>
+        <div className="flex items-center gap-3 text-[var(--text-muted)] text-xs mb-3 flex-wrap">
+          {storeHoursToday && (
+            <span className="flex items-center gap-1"><Clock size={11} /> {storeHoursToday}</span>
+          )}
+          {storeDistanceKm && (
+            <span className="flex items-center gap-1"><Navigation size={11} /> {storeDistanceKm} km from depot</span>
+          )}
+        </div>
+        <div className="flex items-end justify-between mb-2">
+          <div className="text-[var(--text-primary)] text-xl font-bold">{storeMonthTotal} <span className="text-xs text-[var(--text-muted2)] font-normal">pcs this month</span></div>
+          <Ticker current={storeMonthTotal} previous={storeLastMonthTotal} />
+        </div>
+        {storeDaily.length > 1 && <LineChart data={storeDaily} />}
+      </div>
+  )
+
   if (loading || !stats) {
     return <div className="flex-1 flex items-center justify-center text-[var(--text-muted2)]">Loading dashboard...</div>
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-4">
+    <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-4 lg:grid lg:grid-cols-12 lg:grid-rows-[minmax(0,1fr)] lg:gap-5 lg:p-6 lg:overflow-hidden">
       {showAdjust && <StockAdjustModal onClose={() => setShowAdjust(false)} />}
+      {/* "contents" = no effect on phones; on desktop this becomes the left column */}
+      <div className="contents lg:flex lg:flex-col lg:gap-4 lg:col-span-5 xl:col-span-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
+      <div className="contents lg:grid lg:grid-cols-2 lg:gap-4 lg:shrink-0">
       <div className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4">
         <div className="text-[var(--text-muted)] text-xs mb-1">Sales this month</div>
         <div className="flex items-end justify-between gap-2">
@@ -231,6 +258,7 @@ export default function DashboardScreen() {
           <div className="text-[var(--text-primary)] text-3xl font-bold">{stats.activeThisMonth} <span className="text-sm text-[var(--text-muted2)] font-normal">stores</span></div>
           <Ticker current={stats.activeThisMonth} previous={stats.activeLastMonth} />
         </div>
+      </div>
       </div>
 
       <FollowupsCard />
@@ -338,7 +366,7 @@ export default function DashboardScreen() {
       )}
 
       {showAllDeliveries && createPortal(
-        <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col p-4"
+        <div className="sheet fixed inset-0 z-50 bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col p-4"
           onClick={() => setShowAllDeliveries(false)}>
           <div onClick={e => e.stopPropagation()}
             className="m-2 mt-10 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[80vh] overflow-y-auto shadow-2xl">
@@ -373,7 +401,7 @@ export default function DashboardScreen() {
         document.body
       )}
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 lg:order-first lg:shrink-0">
         <button onClick={() => setQuickOpen(true)}
           className="flex-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold rounded-2xl py-3 transition-colors">
           Mark delivery / visit
@@ -387,12 +415,22 @@ export default function DashboardScreen() {
       {quickOpen && <QuickDeliverModal onClose={() => setQuickOpen(false)} onSaved={() => window.location.reload()} />}
       {addStoreOpen && <AddStoreModal onClose={() => setAddStoreOpen(false)} onSaved={() => window.location.reload()} />}
 
-      <button onClick={() => setShowFullMap(true)}
-        className="relative h-40 shrink-0 rounded-2xl overflow-hidden bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50">
-        <div className="w-full h-full pointer-events-none">{depot && <StoreMap depot={depot} stores={stores} interactive={false} zoom={10} />}</div>
-        <span className="absolute bottom-2 right-2 bg-[var(--bg-root)]/70 backdrop-blur-md text-[var(--text-secondary)] text-xs px-2 py-1 rounded-full">Tap to view map</span>
-        <span className="absolute top-2 left-2 bg-[var(--bg-root)]/70 backdrop-blur-md text-[var(--text-secondary)] text-xs px-2 py-1 rounded-full">{stores.length} stores</span>
-      </button>
+      </div>
+
+      {isDesktop ? (
+        <div className="relative lg:col-span-7 xl:col-span-8 min-h-0 rounded-2xl overflow-hidden bg-[var(--bg-card)]/50 border border-[var(--bg-input)]/50">
+          <div className="absolute inset-0">{depot && <StoreMap depot={depot} stores={stores} interactive={true} zoom={11} onStoreClick={openStoreDetail} />}</div>
+          <span className="absolute top-3 left-3 bg-[var(--bg-root)]/80 backdrop-blur-md text-[var(--text-secondary)] text-xs px-2.5 py-1 rounded-full">{stores.length} stores · click a dot for details</span>
+          {storePanel}
+        </div>
+      ) : (
+        <button onClick={() => setShowFullMap(true)}
+          className="relative h-40 shrink-0 rounded-2xl overflow-hidden bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50">
+          <div className="w-full h-full pointer-events-none">{depot && <StoreMap depot={depot} stores={stores} interactive={false} zoom={10} />}</div>
+          <span className="absolute bottom-2 right-2 bg-[var(--bg-root)]/70 backdrop-blur-md text-[var(--text-secondary)] text-xs px-2 py-1 rounded-full">Tap to view map</span>
+          <span className="absolute top-2 left-2 bg-[var(--bg-root)]/70 backdrop-blur-md text-[var(--text-secondary)] text-xs px-2 py-1 rounded-full">{stores.length} stores</span>
+        </button>
+      )}
 
       {showFullMap && (
         <div className="fixed inset-0 z-[45] bg-[var(--bg-root)] flex flex-col pb-20">
@@ -403,27 +441,7 @@ export default function DashboardScreen() {
           <div className="flex-1 relative">
             <div className="absolute inset-0">{depot && <StoreMap depot={depot} stores={stores} interactive={true} zoom={11} onStoreClick={openStoreDetail} />}</div>
 
-            {selectedStore && (
-              <div className="absolute bottom-4 left-4 right-4 bg-[var(--bg-card)]/85 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 shadow-2xl">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[var(--text-primary)] font-semibold text-sm">{selectedStore.name}</span>
-                  <button onClick={() => setSelectedStore(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={16} /></button>
-                </div>
-                <div className="flex items-center gap-3 text-[var(--text-muted)] text-xs mb-3 flex-wrap">
-                  {storeHoursToday && (
-                    <span className="flex items-center gap-1"><Clock size={11} /> {storeHoursToday}</span>
-                  )}
-                  {storeDistanceKm && (
-                    <span className="flex items-center gap-1"><Navigation size={11} /> {storeDistanceKm} km from depot</span>
-                  )}
-                </div>
-                <div className="flex items-end justify-between mb-2">
-                  <div className="text-[var(--text-primary)] text-xl font-bold">{storeMonthTotal} <span className="text-xs text-[var(--text-muted2)] font-normal">pcs this month</span></div>
-                  <Ticker current={storeMonthTotal} previous={storeLastMonthTotal} />
-                </div>
-                {storeDaily.length > 1 && <LineChart data={storeDaily} />}
-              </div>
-            )}
+            {storePanel}
           </div>
         </div>
       )}

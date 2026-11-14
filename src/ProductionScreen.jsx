@@ -187,7 +187,7 @@ export default function ProductionScreen() {
       </div>
 
       {/* Batch list */}
-      <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-3">
+      <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-3">
         {activeBatches.length === 0 && !showForm && (
           <div className="text-center text-[var(--text-muted2)] mt-16">
             <FlaskConical size={40} className="mx-auto mb-3 opacity-40" />

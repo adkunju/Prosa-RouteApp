@@ -275,8 +275,8 @@ export default function SalesScreen() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {logStore && <CallLogModal store={logStore} onClose={() => setLogStore(null)} />}
-      <div className="px-4 pt-4 pb-2 shrink-0">
-        <div className="grid grid-cols-4 gap-2 mb-3">
+      <div className="px-4 pt-4 pb-2 shrink-0 lg:px-6 lg:pt-6 lg:pb-4 lg:flex lg:items-stretch lg:gap-3">
+        <div className="grid grid-cols-4 gap-2 mb-3 lg:mb-0 lg:w-[460px] lg:shrink-0">
           <div onClick={() => setShowSalesPopup(true)} role="button"
             className="col-span-2 cursor-pointer bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-xl px-1 py-2 flex items-center hover:border-[var(--accent)]/40 transition-colors">
             <button onClick={e => { e.stopPropagation(); if (canPrev) setSalesMonth(m => shiftMonth(m, -1)) }} disabled={!canPrev}
@@ -305,7 +305,7 @@ export default function SalesScreen() {
           </div>
         </div>
 
-        <div className="relative mb-2">
+        <div className="relative mb-2 lg:mb-0 lg:flex-1 lg:flex">
           <input
             value={searchQ}
             onChange={e => setSearchQ(e.target.value)}
@@ -316,7 +316,7 @@ export default function SalesScreen() {
             <button onClick={() => setSearchQ('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted2)]">✕</button>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 lg:w-96 lg:shrink-0">
           <select value={pipeline} onChange={e => setPipeline(e.target.value)}
           className="w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-xl px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]">
           <option value="all">All stores ({data.length})</option>
@@ -334,9 +334,9 @@ export default function SalesScreen() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-28 flex flex-col gap-3">
+      <div className="flex-1 overflow-y-auto px-4 pb-28 lg:pb-6 flex flex-col gap-3 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:gap-4 lg:content-start lg:items-start lg:px-6">
         {rows.length === 0 && (
-          <div className="text-center text-[var(--text-muted2)] mt-16">
+          <div className="text-center text-[var(--text-muted2)] mt-16 lg:col-span-full">
             <Package size={40} className="mx-auto mb-3 opacity-40" />
             <p>No stores in this view</p>
           </div>
@@ -386,7 +386,7 @@ function SalesPopup({ onClose, stores, initialMonth }) {
   })() }, [month])
 
   return (
-    <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col" onClick={onClose}>
+    <div className="sheet fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col" onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
         className="m-4 mt-12 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl flex flex-col max-h-[80vh] shadow-2xl">
         <div className="px-4 py-3 border-b border-[var(--bg-input)]/40 flex items-center justify-between shrink-0">
@@ -470,7 +470,7 @@ function ExpiryPopup({ onClose, stores }) {
   })() }, [month])
 
   return (
-    <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col" onClick={onClose}>
+    <div className="sheet fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col" onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
         className="m-4 mt-12 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl flex flex-col max-h-[80vh] shadow-2xl">
         <div className="px-4 py-3 border-b border-[var(--bg-input)]/40 flex items-center justify-between shrink-0">

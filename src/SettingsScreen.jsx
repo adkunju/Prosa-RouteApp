@@ -87,7 +87,7 @@ export default function SettingsScreen({ theme, setTheme }) {
           <button onClick={() => setSection(null)} className="text-[var(--text-accent)] text-sm">← Settings</button>
           <span className="text-[var(--text-muted)] text-sm ml-2">WhatsApp messages</span>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 pb-28">
+        <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6">
           <WaTemplatesPanel />
         </div>
       </div>
@@ -108,7 +108,7 @@ export default function SettingsScreen({ theme, setTheme }) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
+    <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-2">
       <button onClick={() => setSection('stores')}
         className="bg-[var(--bg-card)]/50 backdrop-blur-xl border border-[var(--bg-input)]/50 rounded-2xl p-4 flex items-center justify-between hover:bg-[var(--bg-input)]/40 transition-colors">
         <span className="flex items-center gap-3 text-[var(--text-primary)] text-sm font-medium">

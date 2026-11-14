@@ -8,8 +8,8 @@ const PLACES_KEY = import.meta.env.VITE_GOOGLE_PLACES_KEY
 const ANGAMALY = { lat: 10.1960, lng: 76.3860 }
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
-export default function AddStoreModal({ onClose, onSaved }) {
-  const [searchQuery, setSearchQuery] = useState('')
+export default function AddStoreModal({ onClose, onSaved, initialQuery = '' }) {
+  const [searchQuery, setSearchQuery] = useState(initialQuery)
   const [suggestions, setSuggestions] = useState([])
   const [searching, setSearching] = useState(false)
   const [picked, setPicked] = useState(false)
@@ -114,7 +114,7 @@ export default function AddStoreModal({ onClose, onSaved }) {
       service_minutes: Number(serviceMinutes) || 15,
       is_pickup: isPickup,
       exclude_from_forecast: !inForecast,
-    }).select('id, name').single()
+    }).select('id, name, lat, lng, pipeline_status').single()
     if (insErr || !newStore) { setSaving(false); alert('Store was NOT saved: ' + (insErr?.message || 'unknown error')); return }
 
     if (newStore && phone) {
@@ -132,7 +132,7 @@ export default function AddStoreModal({ onClose, onSaved }) {
   const field = "w-full bg-[var(--bg-input)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[var(--accent)]"
 
   return (
-    <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
+    <div className="sheet fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
       <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0">
         <span className="text-[var(--text-primary)] font-semibold">Add store</span>
         <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>

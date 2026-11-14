@@ -239,7 +239,7 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
   const anything = remark.trim().length > 0 || (reminder.open && !!reminder.date) || selectedSkuIds.some(id => Number(lines[id]?.qty) > 0 || retTotal(lines[id]) > 0)
 
   return (
-    <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
+    <div className="sheet fixed inset-0 z-[60] bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col">
       <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0">
         <span className="text-[var(--text-primary)] font-semibold">
           {store ? store.name : 'Quick delivery'}
@@ -247,7 +247,7 @@ export default function QuickDeliverModal({ onClose, onSaved, initialStore }) {
         <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X size={20} /></button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 pb-28">
+      <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6">
         {!store && (
           <>
             {!query && <p className="text-[var(--text-muted2)] text-xs mb-2">Recent stores</p>}

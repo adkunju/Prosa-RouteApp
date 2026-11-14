@@ -169,7 +169,7 @@ export default function ManageStoresList() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
+      <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-2">
         {filtered.map(s => (
           <button key={s.id} onClick={() => openDetail(s)}
             className="bg-[var(--bg-card)] rounded-xl p-4 flex items-center justify-between gap-3 text-left hover:bg-[var(--bg-input)]/60 transition-colors">

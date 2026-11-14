@@ -36,7 +36,7 @@ function VisitHistoryPopup({ storeId, skuId, storeName, skuName, onClose }) {
   })() }, [storeId, skuId])
 
   return (
-    <div className="fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col"
+    <div className="sheet fixed inset-0 z-50 bg-[var(--bg-root)]/70 backdrop-blur-2xl flex flex-col"
       onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
         className="m-4 mt-12 bg-[var(--bg-card)] border border-[var(--bg-input)]/60 rounded-2xl p-4 max-h-[75vh] overflow-y-auto shadow-2xl">
@@ -130,10 +130,10 @@ export default function ForecastScreen() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4 pb-28 flex flex-col gap-2">
-        {loading && <div className="text-[var(--text-muted2)] text-center mt-16">Loading forecast...</div>}
+      <div className="flex-1 overflow-y-auto p-4 pb-28 lg:pb-6 flex flex-col gap-2 lg:grid lg:grid-cols-2 xl:grid-cols-3 lg:gap-3 lg:content-start lg:p-6">
+        {loading && <div className="text-[var(--text-muted2)] text-center mt-16 lg:col-span-full">Loading forecast...</div>}
         {!loading && sorted.length === 0 && (
-          <div className="text-center text-[var(--text-muted2)] mt-16">
+          <div className="text-center text-[var(--text-muted2)] mt-16 lg:col-span-full">
             <Clock size={40} className="mx-auto mb-3 opacity-40" />
             <p>No forecast data yet</p>
             <p className="text-sm mt-1">Log a few delivery visits to see forecasts</p>

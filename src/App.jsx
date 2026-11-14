@@ -51,15 +51,15 @@ function PlanHub() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex border-b border-[var(--bg-input)] shrink-0 overflow-x-auto">
         <button onClick={() => setTab('allocation')}
-          className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'allocation' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
+          className={`flex-1 lg:flex-none lg:px-6 lg:text-sm py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'allocation' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
           Allocate
         </button>
         <button onClick={() => setTab('week')}
-          className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'week' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
+          className={`flex-1 lg:flex-none lg:px-6 lg:text-sm py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'week' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
           Schedule
         </button>
         <button onClick={() => setTab('forecast')}
-          className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'forecast' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
+          className={`flex-1 lg:flex-none lg:px-6 lg:text-sm py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'forecast' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
           Forecast
         </button>
       </div>
@@ -76,11 +76,11 @@ function SalesHub() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex border-b border-[var(--bg-input)] shrink-0">
         <button onClick={() => setTab('stores')}
-          className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'stores' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
+          className={`flex-1 lg:flex-none lg:px-6 lg:text-sm py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'stores' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
           Stores
         </button>
         <button onClick={() => setTab('find')}
-          className={`flex-1 py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'find' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
+          className={`flex-1 lg:flex-none lg:px-6 lg:text-sm py-2.5 text-xs font-medium transition-colors whitespace-nowrap px-2 ${tab === 'find' ? 'text-[var(--text-accent)] border-b-2 border-[var(--text-accent)]' : 'text-[var(--text-muted2)]'}`}>
           Find
         </button>
       </div>
@@ -132,23 +132,41 @@ function Shell() {
     }).catch(e => console.error('travel matrix sync failed', e))
   }, [])
   return (
-    <div className="h-screen bg-[var(--bg-root)] flex flex-col relative">
+    <div className="h-screen bg-[var(--bg-root)] flex flex-col lg:flex-row relative">
       <CallFollowupPrompt />
       <ConfirmHost />
       <StoreHistoryHost />
-      <div className="shrink-0 px-4 flex items-center bg-[var(--bg-root)]"
+      {/* Desktop only: sidebar navigation (hidden below 1024px) */}
+      <aside className="hidden lg:flex w-56 shrink-0 flex-col gap-1 p-4 border-r border-[var(--bg-input)] bg-[var(--bg-card)]/60">
+        <img src="/logo.png" alt="Prosa" className="h-8 w-auto object-contain self-start mt-2 mb-6 ml-2" />
+        {NAV.map(({ key, label, Icon }) => {
+          const active = screen === key
+          return (
+            <button key={key} onClick={() => setScreen(key)}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-left border transition-colors
+                ${active ? 'bg-[var(--accent)]/12 border-[var(--accent)]/25 text-[var(--text-accent)]' : 'border-transparent text-[var(--text-muted)] hover:bg-[var(--bg-input)] hover:text-[var(--text-secondary)]'}`}>
+              <Icon size={18} /> {label}
+            </button>
+          )
+        })}
+      </aside>
+      <div className="lg:hidden shrink-0 px-4 flex items-center bg-[var(--bg-root)]"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 22px)', paddingBottom: '12px' }}>
         <img src="/logo.png" alt="Prosa" className="h-8 w-auto object-contain" />
       </div>
-      <main className="flex-1 flex flex-col overflow-hidden relative pb-20">
+      <main className="flex-1 flex flex-col overflow-hidden relative pb-20 lg:pb-0 lg:min-w-0">
         {screen === 'dashboard' && <DashboardScreen />}
         {screen === 'plan'      && <PlanHub />}
         {screen === 'delivery'  && <PlanViewScreen />}
         {screen === 'sales'     && <SalesHub />}
-        {screen === 'settings'  && <SettingsScreen theme={theme} setTheme={setTheme} />}
+        {screen === 'settings'  && (
+          <div className="contents lg:flex lg:flex-1 lg:flex-col lg:overflow-hidden lg:w-full lg:max-w-3xl lg:mx-auto">
+            <SettingsScreen theme={theme} setTheme={setTheme} />
+          </div>
+        )}
       </main>
 
-      <nav className="fixed bottom-4 left-4 right-4 max-w-md mx-auto bg-[var(--bg-card)]/50 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.35)] flex z-50 p-1 gap-0.5">
+      <nav className="lg:hidden fixed bottom-4 left-4 right-4 max-w-md mx-auto bg-[var(--bg-card)]/50 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.35)] flex z-50 p-1 gap-0.5">
         {NAV.map(({ key, label, Icon }) => {
           const active = screen === key
           return (

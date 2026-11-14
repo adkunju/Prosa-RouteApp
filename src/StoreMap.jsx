@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import * as maplibregl from 'maplibre-gl'
+import './maplibreSetup'
 
 export default function StoreMap({ depot, stores, interactive = true, zoom = 11, onStoreClick, center }) {
   const containerRef = useRef(null)

@@ -114,7 +114,7 @@ export default function ProspectVisitModal({ planId, stops, onClose, onAdded, de
   }
 
   return (
-    <div className="fixed inset-0 z-[60] bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col">
+    <div className="sheet fixed inset-0 z-[60] bg-[var(--bg-root)]/80 backdrop-blur-2xl flex flex-col">
       <div className="px-4 py-3 border-b border-[var(--bg-input)]/60 flex items-center justify-between shrink-0">
         <div>
           <span className="text-[var(--text-primary)] font-semibold">Visit Prospects</span>

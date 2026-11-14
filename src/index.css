@@ -62,3 +62,12 @@
   --text-amber: #ffc933;
   --text-amber2: #c9781f;
 }
+
+/* Desktop only (1024px and wider): full-screen pop-ups made for the phone
+   are shown as a centred column instead of stretching across the monitor. */
+@media (min-width: 1024px) {
+  .sheet {
+    padding-left: max(1.5rem, calc((100vw - 720px) / 2));
+    padding-right: max(1.5rem, calc((100vw - 720px) / 2));
+  }
+}
